@@ -1,65 +1,42 @@
-import React, { useState } from 'react';
+import React from 'react';
+import { supabase } from './supabaseClient';
 import CustomerUI from './CustomerUI';
 import AdminDashboard from './AdminDashboard';
-import KitchenMode from './KitchenMode';
+import AdminProducts from './AdminProducts';
 
 function App() {
-  const [viewMode, setViewMode] = useState('selector');
+  const queryParams = new URLSearchParams(window.location.search);
+  const businessId = queryParams.get('business_id');
+  const view = queryParams.get('view') || 'customer';
 
-  const businessInfo = {
-    id: "altoque-bar-1",
-    name: "Cervecería Patagonia"
+  const createDemoBusiness = async () => {
+    const { data, error } = await supabase.from('businesses').insert({ name: '🍺 Bar Demo AlToque' }).select().single();
+    if (error) return alert("Error conectando a Supabase. ¿Ya pegaste las llaves en Vercel/.env y corriste el SQL?");
+    if (data) {
+      window.location.href = `/?business_id=${data.id}&view=products`;
+    }
   };
 
-  if (viewMode === 'customer') {
+  if (!businessId) {
     return (
-      <div className="app-container customer-container" style={{background: '#121212'}}>
-         <CustomerUI businessId={businessInfo.id} businessName={businessInfo.name} />
-         <button className="back-btn" onClick={() => setViewMode('selector')}>↩ Modo Entwickler</button>
+      <div style={{padding: '30px', textAlign:'center', minHeight:'100vh', background:'#121212', color:'white', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center'}}>
+         <h1 style={{color:'var(--primary)', fontSize:'48px'}}>⚡ AlToque</h1>
+         <p style={{fontSize:'18px', color:'#aaa', marginBottom:'40px'}}>Tu Motor de Ventas QR está listo para arrancar.</p>
+         
+         <div style={{background:'#1e1e1e', padding:'30px', borderRadius:'20px', border:'1px solid #333', maxWidth:'400px'}}>
+            <h3 style={{marginTop:0}}>¿Aún no tienes un comercio creado?</h3>
+            <p style={{fontSize:'14px', color:'#888', marginBottom:'25px'}}>Generaremos uno automáticamente en tu base de datos para que empieces a cargar tus bebidas al instante.</p>
+            <button onClick={createDemoBusiness} style={{background:'var(--success)', color:'white', border:'none', padding:'15px', width:'100%', borderRadius:'12px', fontSize:'16px', fontWeight:'bold', cursor:'pointer', boxShadow:'0 5px 15px rgba(40,167,69,0.3)'}}>
+              Crear mi primer Bar Demo 🚀
+            </button>
+         </div>
       </div>
     );
   }
 
-  if (viewMode === 'admin') {
-    return (
-      <div className="admin-container" style={{background: '#111'}}>
-         <AdminDashboard businessId={businessInfo.id} />
-         <button className="back-btn-admin" style={{position:'fixed', bottom:'20px', left:'20px', background:'#333'}} onClick={() => setViewMode('selector')}>Volver Selector</button>
-      </div>
-    );
-  }
-
-  if (viewMode === 'kitchen') {
-    return (
-      <div className="admin-container" style={{background: '#0a0a0a'}}>
-         <KitchenMode businessId={businessInfo.id} />
-         <button className="back-btn-admin" style={{position:'fixed', bottom:'20px', left:'20px', background:'#333'}} onClick={() => setViewMode('selector')}>Volver Selector</button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="app-container" style={{display:'flex', justifyContent:'center', minHeight:'100vh', background:'#121212'}}>
-      <main className="role-selector" style={{width:'100%', maxWidth:'400px'}}>
-        <h1 className="demo-title">⚡ AlToque</h1>
-        <p style={{color:'#a0a0a0', marginBottom:'40px', fontSize:'18px'}}>
-          Selecciona tu Rol de Operación:
-        </p>
-        
-        <button className="btn-primary" onClick={() => setViewMode('customer')}>
-          Escanear QR MESA 12 📱
-        </button>
-        
-        <button className="btn-outline" onClick={() => setViewMode('admin')}>
-          Dashboard de Caja (Admin) 🧮
-        </button>
-
-        <button className="btn-outline" style={{borderColor: 'var(--primary)', color: 'var(--primary)'}} onClick={() => setViewMode('kitchen')}>
-          Pantalla de Cocina / Barra 🔥
-        </button>
-      </main>
-    </div>
-  );
+  if (view === 'admin') return <AdminDashboard businessId={businessId} />;
+  if (view === 'products') return <AdminProducts businessId={businessId} />;
+  return <CustomerUI businessId={businessId} />;
 }
 
 export default App;
