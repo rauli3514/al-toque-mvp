@@ -8,24 +8,61 @@ export default function CustomerUI({ businessId }) {
   const [cart, setCart] = useState([]);
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [tableNumber, setTableNumber] = useState('');
   
   // Inline Real-Time Upsell
   const [inlineUpsell, setInlineUpsell] = useState(null); // { product, message }
+
+  // VIBRATION EFFECT — must be declared here (before any conditional returns)
+  useEffect(() => {
+    if (order && order.status === 'READY') {
+      try {
+        if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
+      } catch (e) {}
+    }
+  }, [order?.status]);
 
   const clientToken = localStorage.getItem("client_token") || crypto.randomUUID();
 
   useEffect(() => {
     localStorage.setItem("client_token", clientToken);
     loadMenu();
+    // Restore active order from localStorage if page was refreshed
+    const savedOrderId = localStorage.getItem("active_order_id");
+    if (savedOrderId) {
+      supabase.from('orders').select('*').eq('id', savedOrderId).single().then(({ data }) => {
+        if (data && !['DELIVERED', 'CANCELLED'].includes(data.status)) {
+          setOrder(data);
+          setView('status');
+        } else {
+          localStorage.removeItem("active_order_id");
+        }
+      });
+    }
   }, [businessId]);
 
   useEffect(() => {
-    if (!order) return;
-    const channel = supabase.channel(`order_updates`)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders', filter: `id=eq.${order.id}` }, (payload) => {
-        setOrder(payload.new);
-      }).subscribe();
-    return () => { supabase.removeChannel(channel) };
+    if (!order?.id) return;
+
+    // Unique channel name prevents collisions between different client sessions
+    const channelName = `order-status-${order.id}`;
+    const channel = supabase.channel(channelName)
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'orders',
+        filter: `id=eq.${order.id}`
+      }, (payload) => {
+        console.log('Realtime event:', payload);
+        setOrder(payload.new); // Direct state update — no re-fetch needed
+      })
+      .subscribe((status) => {
+        console.log('Customer subscription status:', status);
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [order?.id]);
 
   const loadMenu = async () => {
@@ -105,12 +142,12 @@ export default function CustomerUI({ businessId }) {
 
     if (customMatch && !currentCart.some(c => c.product_id === customMatch.id)) {
        suggestion = customMatch;
-       message = `🔥 Recomendado: Agregá ${customMatch.name}`;
+       message = `🔥 Ya que estás... agregá ${customMatch.name}`;
     } 
     // IF DRINK -> SUGGEST SAME DRINK (Repeat purchase)
     else if (isDrink && fullProduct.is_upsell_target) {
        suggestion = fullProduct;
-       message = "🍺 Llevá 2 y ahorrá viaje";
+       message = "🍺 2da unidad con descuento";
     }
     // IF FOOD -> COMPLEMENTARY ITEM
     else if (isFood) {
@@ -118,13 +155,13 @@ export default function CustomerUI({ businessId }) {
            const cheddar = products.find(p => p.name.toLowerCase().includes('cheddar') && !currentCart.some(c => c.product_id === p.id));
            if (cheddar) {
               suggestion = cheddar;
-              message = "🍟 Agregá Cheddar al toque";
+              message = "🧀 Aprovechá ahora un buen Cheddar";
            }
        } else {
            const papas = products.find(p => (p.name.toLowerCase().includes('papa') || p.name.toLowerCase().includes('frita')) && p.is_upsell_target && !currentCart.some(c => c.product_id === p.id));
            if (papas) {
               suggestion = papas;
-              message = "🍟 Acompañalo con Fritas";
+              message = "🍟 Sumale Fritas y ahorrá";
            }
        }
     }
@@ -134,7 +171,7 @@ export default function CustomerUI({ businessId }) {
        const generics = products.filter(p => p.is_upsell_target && (!p.description || p.description.length < 2) && !currentCart.some(c => c.product_id === p.id) && p.id !== prodId);
        if (generics.length > 0) {
           suggestion = generics[Math.floor(Math.random() * generics.length)];
-          message = "¡No te olvides de agregar esto!";
+          message = "⚡️ ¡Aprovechá ahora!";
        }
     }
 
@@ -155,7 +192,9 @@ export default function CustomerUI({ businessId }) {
     setLoading(true);
     try {
       const { data: orderData, error: orderErr } = await supabase.from('orders').insert({
-        business_id: businessId, status: 'CREATED', order_type: 'PICKUP', customer_notes: `[CLIENT_TOKEN:${clientToken}]`, payment_method: 'CASH', total: 0
+        business_id: businessId, status: 'CREATED', order_type: 'PICKUP',
+        customer_notes: `[CLIENT_TOKEN:${clientToken}]`, payment_method: 'CASH', total: 0,
+        table_number: tableNumber ? parseInt(tableNumber) : null
       }).select().single();
 
       if (orderErr || !orderData) throw new Error("Error iniciando pedido.");
@@ -185,6 +224,7 @@ export default function CustomerUI({ businessId }) {
       setOrder(updatedOrder);
       setCart([]);
       setInlineUpsell(null); // clean floating states
+      localStorage.setItem("active_order_id", updatedOrder.id); // persist across refresh
       setView('status');
     } catch (e) {
       alert("Error: " + e.message);
@@ -209,6 +249,19 @@ export default function CustomerUI({ businessId }) {
     return (
       <div style={{padding:'20px', minHeight:'100vh', display:'flex', flexDirection:'column', background:'#121212', color:'white'}}>
         <h2 style={{color:'white', marginBottom:'20px', borderBottom:'1px solid #333', paddingBottom:'20px'}}>Revisa tu Pedido</h2>
+
+        {/* Optional table number */}
+        <div style={{display:'flex', alignItems:'center', gap:'10px', background:'#1e1e1e', padding:'15px', borderRadius:'12px', marginBottom:'15px', border:'1px solid #333'}}>
+          <span style={{fontSize:'20px'}}>🪑</span>
+          <div style={{flex:1}}>
+            <p style={{margin:0, fontSize:'13px', color:'#888'}}>¿Tenés mesa? (opcional)</p>
+            <input
+              type="number" min="1" placeholder="Número de mesa"
+              value={tableNumber} onChange={e => setTableNumber(e.target.value)}
+              style={{background:'transparent', border:'none', color:'white', fontSize:'18px', fontWeight:'bold', width:'100%', outline:'none'}}
+            />
+          </div>
+        </div>
         
         {cart.length === 0 ? (
            <div style={{textAlign:'center', color:'#888', marginTop:'50px'}}>Tu carrito está vacío. <br/><br/><button onClick={() => setView('menu')} className="btn-outline">Volver al Menú</button></div>
@@ -245,22 +298,68 @@ export default function CustomerUI({ businessId }) {
     );
   }
 
+
+
   if (view === 'status' && order) {
+    const isReady = order.status === 'READY';
+    const isPrep = order.status === 'PAID' || order.status === 'IN_PREPARATION';
+    
+    // Check pending manually or default everything else to pending
+    const isPending = !isReady && !isPrep;
+
     return (
-      <div className="status-container">
-        <h2 style={{color: 'var(--success)', fontSize:'28px'}}>✅ Pedido confirmado</h2>
-        <h1 className="order-number" style={{fontSize:'90px'}}>#{order.display_number}</h1>
-        
-        <p style={{color:'#aaa', marginBottom:'5px', marginTop:'20px', fontSize:'14px', fontWeight:'bold'}}>ESTADO DE TU PEDIDO:</p>
-        <div className={`status-badge ${order.status.toLowerCase()}`} style={{fontSize:'18px', padding:'10px 25px'}}>
-          {order.status === 'PENDING_PAYMENT_CASH' ? '⚠️ ESPERANDO PAGO' : 
-           order.status === 'PAID' ? '✅ RECIBIDO Y PAGADO' : 
-           order.status === 'IN_PREPARATION' ? '🔥 EN PREPARACIÓN' : 
-           order.status === 'READY' ? '🟢 LISTO PARA RETIRAR' : order.status}
+      <div style={{
+         position: 'fixed', top:0, left:0, width:'100vw', height:'100vh', zIndex: 9999,
+         display:'flex', flexDirection:'column', justifyContent:'center', alignItems:'center', 
+         padding:'30px', textAlign:'center', 
+         background: isReady ? 'var(--success)' : '#121212', 
+         transition:'background 0.5s', 
+      }}>
+        <div style={{
+           display:'flex', flexDirection:'column', justifyContent:'center', alignItems:'center', 
+           flex: 1, width: '100%', 
+           animation: isReady ? 'pulseBg 2s infinite' : 'none',
+           borderRadius: '20px'
+        }}>
+           {isPending && (
+              <>
+                 <div style={{fontSize:'70px', marginBottom:'15px', color:'var(--primary)'}}>
+                   {order.payment_method === 'CASH' ? '💵' : '📲'}
+                 </div>
+                 <h2 style={{color:'var(--primary)', margin:'0 0 10px 0', fontSize:'28px'}}>Pedido Recibido</h2>
+                 <p style={{fontSize:'18px', color:'#ccc', lineHeight:'1.5', padding:'0 20px', fontWeight:'bold'}}>
+                    {order.payment_method === 'CASH' ? 'Acercate a caja a pagar en efectivo' : 'Acercate a caja y pagá con tu App favorita'}
+                 </p>
+                 <p style={{fontSize:'16px', color:'#888', marginTop:'30px', marginBottom:'5px'}}>Mostrá tu número:</p>
+                 <h1 style={{fontSize:'100px', margin:0, color:'white', lineHeight:'1'}}>#{order.display_number}</h1>
+              </>
+           )}
+
+           {isPrep && (
+              <>
+                 <div style={{fontSize:'80px', marginBottom:'20px', animation:'spinSlow 4s linear infinite'}}>👨‍🍳</div>
+                 <h2 style={{color:'var(--primary)', fontSize:'28px', margin:'0 0 10px 0'}}>Estamos preparando<br/>tu pedido</h2>
+                 <p style={{fontSize:'18px', color:'#ccc'}}>Te avisaremos por acá cuando esté listo.</p>
+                 <h1 style={{fontSize:'70px', margin:'30px 0 0 0', color:'#444', lineHeight:'1'}}>#{order.display_number}</h1>
+              </>
+           )}
+
+           {isReady && (
+              <>
+                 <div style={{fontSize:'90px', marginBottom:'15px', display:'inline-block'}}>🍻</div>
+                 <h2 style={{color:'white', fontSize:'36px', margin:0, textShadow:'0 2px 10px rgba(0,0,0,0.3)', lineHeight:'1.1'}}>
+                    ¡Tu pedido<br/>está listo!
+                 </h2>
+                 <p style={{fontSize:'22px', color:'white', fontWeight:'bold', marginTop:'15px'}}>Pasá a retirarlo en barra</p>
+                 <div style={{background:'white', color:'var(--success)', padding:'15px 40px', borderRadius:'30px', marginTop:'30px', boxShadow:'0 10px 30px rgba(0,0,0,0.3)'}}>
+                    <h1 style={{fontSize:'80px', margin:0, lineHeight:'1'}}>#{order.display_number}</h1>
+                 </div>
+              </>
+           )}
         </div>
 
-        <button className="btn-outline" style={{marginTop:'auto', width:'100%', padding:'20px', borderColor:'var(--primary)', color:'var(--primary)'}} onClick={() => {setOrder(null); setView('menu');}}>
-          🍻 Pedir otra ronda
+        <button style={{marginTop:'auto', width:'100%', padding:'20px', background:'transparent', border: isReady ? '2px solid white' : '2px solid #333', color: isReady ? 'white' : '#888', borderRadius:'100px', fontSize:'18px', fontWeight:'bold', cursor:'pointer'}} onClick={() => {setOrder(null); localStorage.removeItem("active_order_id"); setView('menu');}}>
+          {isReady ? '✅ Ya lo retiré, pedir de nuevo' : '🍻 Volver al Catálogo'}
         </button>
       </div>
     );
@@ -312,16 +411,41 @@ export default function CustomerUI({ businessId }) {
 
       {/* FLOATING INLINE UPSELL */}
       {inlineUpsell && cart.length > 0 && view === 'menu' && (
-        <div style={{position:'fixed', bottom:'100px', left:'10px', right:'10px', background:'#242424', border:'2px solid var(--primary)', borderRadius:'12px', padding:'15px', color:'white', display:'flex', justifyContent:'space-between', alignItems:'center', zIndex: 1000, boxShadow:'0 -5px 20px rgba(0,0,0,0.5)', animation:'slideUp 0.3s ease-out'}}>
-           <div>
-              <p style={{margin:0, fontSize:'14px', fontWeight:'bold', color:'var(--primary)'}}>{inlineUpsell.message}</p>
-              <h4 style={{margin:'5px 0 0 0', fontSize:'16px'}}>{inlineUpsell.product.name} <span style={{color:'var(--success)'}}>+${inlineUpsell.product.price}</span></h4>
+        <div style={{
+           position:'fixed', bottom:'100px', left:'10px', right:'10px', 
+           background:'linear-gradient(145deg, #2a1100, #140500)', 
+           border:'2px solid var(--primary)', borderRadius:'12px', padding:'15px', 
+           color:'white', display:'flex', justifyContent:'space-between', alignItems:'center', 
+           zIndex: 1000, boxShadow:'0 0 20px rgba(255, 69, 0, 0.4)', animation:'slideUp 0.3s ease-out'
+        }}>
+           <div style={{flex: 1, paddingRight: '10px'}}>
+              <p style={{margin:0, fontSize:'13px', fontWeight:'bold', color:'var(--primary)'}}>
+                {inlineUpsell.message}
+              </p>
+              <h4 style={{margin:'4px 0 0 0', fontSize:'16px', lineHeight: '1.2'}}>
+                {inlineUpsell.product.name}
+              </h4>
+              <div style={{display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px'}}>
+                <span style={{textDecoration: 'line-through', color: '#888', fontSize: '13px', fontWeight: 'bold'}}>
+                  ${Math.round(inlineUpsell.product.price * 1.3)}
+                </span>
+                <span style={{color:'var(--success)', fontWeight:'900', fontSize:'16px'}}>
+                  ${inlineUpsell.product.price}
+                </span>
+              </div>
+              <p style={{margin:'4px 0 0 0', fontSize:'11px', color:'#aaa', fontStyle: 'italic'}}>
+                ⏳ válido solo en este pedido
+              </p>
            </div>
            <button onClick={() => {
                updateCart(inlineUpsell.product, 1);
                clearTimeout(window.upsellTimeout);
                setInlineUpsell(null); // Force dissolve after click
-           }} style={{background:'var(--primary)', color:'white', border:'none', borderRadius:'8px', padding:'10px 15px', fontWeight:'bold', fontSize:'14px', cursor:'pointer', whiteSpace:'nowrap'}}>
+           }} style={{
+               background:'var(--primary)', color:'white', border:'none', 
+               borderRadius:'8px', padding:'12px 16px', fontWeight:'900', 
+               fontSize:'15px', cursor:'pointer', whiteSpace:'nowrap', height: 'fit-content'
+           }}>
              + Agregar
            </button>
         </div>

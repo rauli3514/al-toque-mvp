@@ -5,35 +5,53 @@ export default function AdminDashboard({ businessId }) {
   const [orders, setOrders] = useState([]);
   const [tab, setTab] = useState('active'); // active | history
 
+  const [clickingId, setClickingId] = useState(null);
+
   useEffect(() => {
+    // Initial load
     fetchOrders();
 
-    const channel = supabase.channel('dashboard_updates')
-      .on('postgres_changes', { 
-        event: '*', 
-        schema: 'public', 
+    const channel = supabase.channel('dashboard-orders-channel')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
         table: 'orders',
         filter: `business_id=eq.${businessId}`
-      }, () => {
-        fetchOrders();
+      }, (payload) => {
+        console.log('Dashboard realtime event:', payload.eventType, payload.new || payload.old);
+
+        if (payload.eventType === 'INSERT') {
+          // New order: fetch with items joined (can't get joins from realtime payload)
+          fetchSingleOrder(payload.new.id);
+        } else if (payload.eventType === 'UPDATE') {
+          setOrders(prev => prev.map(o => o.id === payload.new.id ? { ...o, ...payload.new } : o));
+        } else if (payload.eventType === 'DELETE') {
+          setOrders(prev => prev.filter(o => o.id !== payload.old.id));
+        }
       })
-      .subscribe();
+      .subscribe((status) => {
+        console.log('Dashboard subscription status:', status);
+      });
 
     return () => { supabase.removeChannel(channel) };
   }, [businessId]);
 
+  const fetchSingleOrder = async (orderId) => {
+    const { data } = await supabase
+      .from('orders')
+      .select('*, order_items(quantity, product_id, unit_price, products(name))')
+      .eq('id', orderId)
+      .single();
+    if (data) setOrders(prev => {
+      const exists = prev.find(o => o.id === data.id);
+      return exists ? prev.map(o => o.id === data.id ? data : o) : [data, ...prev];
+    });
+  };
+
   const fetchOrders = async () => {
     const { data, error } = await supabase
       .from('orders')
-      .select(`
-        *,
-        order_items (
-          quantity,
-          product_id,
-          unit_price,
-          products ( name )
-        )
-      `)
+      .select('*, order_items(quantity, product_id, unit_price, products(name))')
       .eq('business_id', businessId)
       .order('created_at', { ascending: false });
 
@@ -43,6 +61,7 @@ export default function AdminDashboard({ businessId }) {
 
   const updateStatus = async (orderId, newStatus) => {
     try {
+      setClickingId(orderId);
       const { error } = await supabase
         .from('orders')
         .update({ status: newStatus })
@@ -50,8 +69,11 @@ export default function AdminDashboard({ businessId }) {
         
       if (error) throw error;
       fetchOrders();
+      // Keep feedback visible slightly longer for tactile feel
+      setTimeout(() => setClickingId(null), 600);
     } catch (e) {
       alert("Error cambiando estado: " + e.message);
+      setClickingId(null);
     }
   };
 
@@ -75,7 +97,7 @@ export default function AdminDashboard({ businessId }) {
       </h3>
       
       {getFiltered(statusFilter).map(order => (
-        <div key={order.id} style={{background:'#111', padding:'15px', borderRadius:'10px', marginBottom:'15px', border:'1px solid #444'}}>
+        <div key={order.id} style={{background:'#111', padding:'15px', borderRadius:'10px', marginBottom:'15px', border:'1px solid #444', transition:'all 0.3s', borderColor: clickingId === order.id ? 'var(--success)' : '#444'}}>
           <div className="admin-card-head" style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px'}}>
             <span style={{fontSize:'32px', color:'white', fontWeight:'900'}}>#{order.display_number}</span>
             <span style={{color: 'var(--success)', fontSize:'20px', fontWeight:'bold'}}>${order.total}</span>
@@ -89,10 +111,10 @@ export default function AdminDashboard({ businessId }) {
 
           <button 
             className="btn-primary" 
-            style={{width:'100%', padding:'12px', fontSize:'15px', fontWeight:'bold', border:'none', borderRadius:'8px', cursor:'pointer', background: nextStatusKey==='PAID' ? 'var(--success)' : nextStatusKey==='IN_PREPARATION' ? '#b8860b' : nextStatusKey==='READY' ? '#17a2b8' : 'var(--primary)' }}
+            style={{width:'100%', padding:'12px', fontSize:'15px', fontWeight:'bold', border:'none', borderRadius:'8px', cursor:'pointer', transition:'background 0.2s', background: clickingId === order.id ? 'var(--success)' : nextStatusKey==='PAID' ? 'var(--success)' : nextStatusKey==='IN_PREPARATION' ? '#b8860b' : nextStatusKey==='READY' ? '#17a2b8' : 'var(--primary)' }}
             onClick={() => updateStatus(order.id, nextStatusKey)}
           >
-            {nextActionStr}
+            {clickingId === order.id ? '🔔 ¡Hecho!' : nextActionStr}
           </button>
         </div>
       ))}
