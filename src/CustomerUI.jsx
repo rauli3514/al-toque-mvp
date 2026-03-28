@@ -8,8 +8,10 @@ export default function CustomerUI({ businessId }) {
   const [cart, setCart] = useState([]);
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(false);
+  
+  // Smart Upsell State
+  const [contextUpsells, setContextUpsells] = useState([]);
 
-  // Client Token Anti Duplication
   const clientToken = localStorage.getItem("client_token") || crypto.randomUUID();
 
   useEffect(() => {
@@ -19,37 +21,23 @@ export default function CustomerUI({ businessId }) {
 
   useEffect(() => {
     if (!order) return;
-    
-    // Realtime Status Subscription
     const channel = supabase.channel(`order_updates`)
       .on('postgres_changes', { 
-        event: 'UPDATE', 
-        schema: 'public', 
-        table: 'orders',
-        filter: `id=eq.${order.id}` 
+        event: 'UPDATE', schema: 'public', table: 'orders', filter: `id=eq.${order.id}` 
       }, (payload) => {
         setOrder(payload.new);
       })
       .subscribe();
-
     return () => { supabase.removeChannel(channel) };
   }, [order?.id]);
 
   const loadMenu = async () => {
-    // Bring available products
-    const pReq = supabase.from('products').select('*')
-      .eq('business_id', businessId)
-      .eq('available', true)
-      .is('deleted_at', null);
-
-    // Bring categories for ordering
-    const cReq = supabase.from('categories').select('*')
-      .eq('business_id', businessId)
-      .order('sort_order', { ascending: true });
-
-    const [pRes, cRes] = await Promise.all([pReq, cReq]);
-    if (cRes.data) setCategories(cRes.data);
-    if (pRes.data) setProducts(pRes.data);
+    const [pReq, cReq] = await Promise.all([
+      supabase.from('products').select('*').eq('business_id', businessId).eq('available', true).is('deleted_at', null),
+      supabase.from('categories').select('*').eq('business_id', businessId).order('sort_order', { ascending: true })
+    ]);
+    if (cReq.data) setCategories(cReq.data);
+    if (pReq.data) setProducts(pReq.data);
   };
 
   const updateCart = (product, change) => {
@@ -66,59 +54,124 @@ export default function CustomerUI({ businessId }) {
   };
 
   const calculateTotal = () => cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+  const getCatName = (catId) => categories.find(c => c.id === catId)?.name.toLowerCase() || '';
 
-  const confirmOrder = async () => {
+  const startCheckout = () => {
+    let logicalUpsells = [];
+
+    // Analyzers
+    const hasPapas = cart.some(c => c.name.toLowerCase().includes('papa') || c.name.toLowerCase().includes('frita'));
+    const hasFood = cart.some(c => {
+       const p = products.find(pr => pr.id === c.product_id);
+       return p && (getCatName(p.category_id).includes('comida') || c.name.toLowerCase().includes('hamburguesa') || c.name.toLowerCase().includes('pizza'));
+    });
+    const cartDrinks = cart.filter(c => {
+       const p = products.find(pr => pr.id === c.product_id);
+       return p && (getCatName(p.category_id).includes('bebida') || c.name.toLowerCase().includes('cerveza') || c.name.toLowerCase().includes('ipa'));
+    });
+    const hasDrinks = cartDrinks.length > 0;
+
+    // RULE 1: If Papas -> Suggest Cheddar
+    if (hasPapas) {
+       const cheddarMatch = products.find(p => p.name.toLowerCase().includes('cheddar') && !cart.some(c => c.product_id === p.id));
+       if (cheddarMatch) logicalUpsells.push(cheddarMatch);
+    }
+
+    // RULE 2: If Food but NO Drinks -> Suggest first available Drink
+    if (hasFood && !hasDrinks) {
+       const firstDrink = products.find(p => getCatName(p.category_id).includes('bebida') && !cart.some(c => c.product_id === p.id));
+       if (firstDrink) logicalUpsells.push(firstDrink);
+    }
+
+    // RULE 3: If Drinks -> Suggest the exact same drink they already ordered (Repeat purchase)
+    if (hasDrinks && logicalUpsells.length < 2) {
+       const repeatingDrinkId = cartDrinks[0].product_id;
+       const repeatingDrink = products.find(p => p.id === repeatingDrinkId);
+       if (repeatingDrink && !logicalUpsells.some(u => u.id === repeatingDrink.id)) {
+           logicalUpsells.push(repeatingDrink);
+       }
+    }
+
+    if (logicalUpsells.length > 0) {
+      setContextUpsells(logicalUpsells.slice(0, 2));
+      setView('upsell');
+    } else {
+      confirmOrder();
+    }
+  };
+
+  const confirmOrder = async (additionalItem = null) => {
     setLoading(true);
     try {
-      // 1. Create order
       const { data: orderData, error: orderErr } = await supabase.from('orders').insert({
-        business_id: businessId,
-        status: 'CREATED',
-        order_type: 'PICKUP',
-        customer_notes: `[CLIENT_TOKEN:${clientToken}]`, // Appending token internally 
-        payment_method: 'CASH', // Pre default allowed for strict flow
-        total: 0 // Will auto sum up via trigger when items are added
+        business_id: businessId, status: 'CREATED', order_type: 'PICKUP', customer_notes: `[CLIENT_TOKEN:${clientToken}]`, payment_method: 'CASH', total: 0
       }).select().single();
 
-      if (orderErr || !orderData) throw new Error("No se pudo iniciar el pedido.");
+      if (orderErr || !orderData) throw new Error("Error iniciando pedido.");
 
-      // 2. Create Items
-      const itemsToInsert = cart.map(item => ({
-        order_id: orderData.id,
-        product_id: item.product_id,
-        quantity: item.quantity,
-        unit_price: item.price,
-        subtotal: item.price * item.quantity
+      let finalCart = [...cart];
+      if (additionalItem) {
+        // Find if already exists in cart to increase qty, else push
+        const existingIdx = finalCart.findIndex(c => c.product_id === additionalItem.id);
+        if (existingIdx >= 0) {
+           finalCart[existingIdx].quantity += 1;
+        } else {
+           finalCart.push({ product_id: additionalItem.id, quantity: 1, price: Number(additionalItem.price) });
+        }
+      }
+
+      const itemsToInsert = finalCart.map(item => ({
+        order_id: orderData.id, product_id: item.product_id, quantity: item.quantity, unit_price: item.price, subtotal: item.price * item.quantity
       }));
       
       const { error: itemsErr } = await supabase.from('order_items').insert(itemsToInsert);
       if (itemsErr) throw new Error("Fallo al agregar items.");
 
-      // 3. Confirm to Pending
       const { data: updatedOrder, error: confirmErr } = await supabase.from('orders')
-        .update({ status: 'PENDING_PAYMENT_CASH' }) // Direct cash flow to avoid IN_PREPARATION trigger locks when checking PAID
-        .eq('id', orderData.id)
-        .select().single();
+        .update({ status: 'PENDING_PAYMENT_CASH' }).eq('id', orderData.id).select().single();
 
       if (confirmErr || !updatedOrder) throw new Error("Fallo confirmación final.");
 
       setOrder(updatedOrder);
       setCart([]);
       setView('status');
-
     } catch (e) {
       alert("Error: " + e.message);
     }
     setLoading(false);
   };
 
-  // --- VIEWS ---
   if (view === 'landing') {
     return (
       <div className="landing-screen">
-        <h1 className="landing-title">🍻 Bienvenido al Bar</h1>
+        <h1 className="landing-title">🍻 Bienvenido</h1>
         <p className="landing-subtitle">Pedí al toque. Sin fila. Sin esperar.</p>
         <button className="btn-primary" onClick={() => setView('menu')}>VER MENÚ</button>
+      </div>
+    );
+  }
+
+  // SMART UPSELL SCREEN
+  if (view === 'upsell') {
+    return (
+      <div style={{padding:'30px', textAlign:'center', minHeight:'100vh', display:'flex', flexDirection:'column', justifyContent:'center'}}>
+         <div style={{display:'inline-block', fontSize:'50px', marginBottom:'15px'}}>🍺</div>
+         <h1 style={{color:'var(--primary)', fontSize:'36px', marginBottom:'10px'}}>Ya que estás...</h1>
+         <p style={{fontSize:'20px', color:'#ccc', marginBottom:'40px'}}>Agregá esto con 1 toque</p>
+         
+         <div style={{display:'flex', flexDirection:'column', gap:'15px', marginBottom:'40px'}}>
+            {contextUpsells.map(u => (
+               <div key={u.id} style={{background:'#1e1e1e', padding:'25px', borderRadius:'20px', border:'2px solid var(--primary)', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                  <div style={{textAlign:'left'}}>
+                     <h3 style={{margin:0, fontSize:'22px', color:'white'}}>{u.name}</h3>
+                     <p style={{margin:0, color:'var(--success)', fontWeight:'bold', fontSize:'18px', marginTop:'5px'}}>${Number(u.price)}</p>
+                  </div>
+                  <button onClick={() => confirmOrder(u)} style={{background:'var(--primary)', color:'white', border:'none', width:'55px', height:'55px', borderRadius:'15px', fontSize:'28px', fontWeight:'black', cursor:'pointer', boxShadow:'0 5px 15px rgba(237, 108, 2, 0.4)'}}>+</button>
+               </div>
+            ))}
+         </div>
+
+         <button onClick={() => confirmOrder(null)} style={{width:'100%', padding:'22px', background:'transparent', color:'#888', border:'2px solid #444', borderRadius:'15px', fontSize:'18px', fontWeight:'bold', marginTop:'auto', cursor:'pointer'}}>No gracias, ir a pagar 👉</button>
       </div>
     );
   }
@@ -126,24 +179,26 @@ export default function CustomerUI({ businessId }) {
   if (view === 'status' && order) {
     return (
       <div className="status-container">
-        <h2 style={{color: 'var(--success)'}}>✅ Pedido confirmado</h2>
-        <h1 className="order-number">#{order.display_number}</h1>
+        <h2 style={{color: 'var(--success)', fontSize:'28px'}}>✅ Pedido confirmado</h2>
+        <h1 className="order-number" style={{fontSize:'90px'}}>#{order.display_number}</h1>
         
-        <p style={{color:'#aaa', marginBottom:'5px', marginTop:'20px'}}>ESTADO DE TU PEDIDO:</p>
-        <div className={`status-badge ${order.status.toLowerCase()}`}>
+        <p style={{color:'#aaa', marginBottom:'5px', marginTop:'20px', fontSize:'14px', fontWeight:'bold'}}>ESTADO DE TU PEDIDO:</p>
+        <div className={`status-badge ${order.status.toLowerCase()}`} style={{fontSize:'18px', padding:'10px 25px'}}>
           {order.status === 'PENDING_PAYMENT_CASH' ? '⚠️ ESPERANDO PAGO' : 
            order.status === 'PAID' ? '✅ RECIBIDO Y PAGADO' : 
            order.status === 'IN_PREPARATION' ? '🔥 EN PREPARACIÓN' : 
            order.status === 'READY' ? '🟢 LISTO PARA RETIRAR' : order.status}
         </div>
 
-        <button className="btn-outline" style={{marginTop:'auto', width:'100%'}} onClick={() => setView('menu')}>🍻 Pedir otra ronda</button>
+        <button className="btn-outline" style={{marginTop:'auto', width:'100%', padding:'20px', borderColor:'var(--primary)', color:'var(--primary)'}} onClick={() => {setOrder(null); setView('menu');}}>
+          🍻 Pedir otra ronda
+        </button>
       </div>
     );
   }
 
   return (
-    <div style={{paddingBottom: '100px'}}>
+    <div style={{paddingBottom: '120px'}}>
       <div className="store-header" style={{position:'static'}}>
         <h2>Menú AlToque</h2>
       </div>
@@ -152,7 +207,8 @@ export default function CustomerUI({ businessId }) {
 
       <div className="product-list">
         {categories.map(cat => {
-          const prods = products.filter(p => p.category_id === cat.id);
+          // Filtrado clave: Escondemos de la lista principal los que están marcados como "ventas encubiertas" o Upsells (is_upsell_target)
+          const prods = products.filter(p => p.category_id === cat.id && !p.is_upsell_target);
           if (prods.length === 0) return null;
           
           return (
@@ -163,16 +219,19 @@ export default function CustomerUI({ businessId }) {
                 return (
                   <div key={p.id} className="product-card">
                     <div className="product-info">
-                      <h4>{p.name}</h4>
-                      <p className="product-price">${Number(p.price)}</p>
+                      <h4 style={{margin:'0 0 5px 0'}}>{p.name}</h4>
+                      {cartItem && cartItem.quantity === 1 && (getCatName(p.category_id).includes('bebida') || p.name.toLowerCase().includes('cerveza')) && (
+                        <span style={{fontSize:'12px', background:'#333', color:'#888', padding:'2px 8px', borderRadius:'10px', display:'inline-block', marginBottom:'5px'}}>🍺 Llevá 2 y no des más vueltas</span>
+                      )}
+                      <p className="product-price" style={{margin:0}}>${Number(p.price)}</p>
                     </div>
                     
                     <div style={{display:'flex', alignItems:'center', gap:'15px'}}>
                       {cartItem ? (
                         <>
-                           <button onClick={() => updateCart(p, -1)} style={{background:'#333', color:'white', border:'none', width:'35px', height:'35px', borderRadius:'8px', fontSize:'18px'}}>-</button>
+                           <button onClick={() => updateCart(p, -1)} style={{background:'#333', color:'white', border:'none', width:'35px', height:'35px', borderRadius:'8px', fontSize:'18px', cursor:'pointer'}}>-</button>
                            <span style={{fontSize:'18px', fontWeight:'bold'}}>{cartItem.quantity}</span>
-                           <button onClick={() => updateCart(p, 1)} style={{background:'var(--primary)', color:'white', border:'none', width:'35px', height:'35px', borderRadius:'8px', fontSize:'18px'}}>+</button>
+                           <button onClick={() => updateCart(p, 1)} style={{background:'var(--primary)', color:'white', border:'none', width:'35px', height:'35px', borderRadius:'8px', fontSize:'18px', cursor:'pointer'}}>+</button>
                         </>
                       ) : (
                         <button className="add-btn" onClick={() => updateCart(p, 1)}>+</button>
@@ -187,8 +246,8 @@ export default function CustomerUI({ businessId }) {
       </div>
 
       {cart.length > 0 && (
-        <div className="sticky-cart" style={{display:'flex', gap:'10px'}}>
-          <button className="btn-primary" onClick={confirmOrder} disabled={loading}>
+        <div className="sticky-cart" style={{display:'flex', gap:'10px', justifyContent:'center'}}>
+          <button className="btn-primary" onClick={startCheckout} disabled={loading} style={{fontSize:'20px', padding:'20px'}}>
             {loading ? "Generando..." : `Ver pedido ($${calculateTotal()})`}
           </button>
         </div>

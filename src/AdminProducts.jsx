@@ -2,18 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 
 export default function AdminProducts({ businessId }) {
+  const [productsList, setProductsList] = useState([]);
   const [categories, setCategories] = useState([]);
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
   const [categoryId, setCategoryId] = useState('');
+  const [isUpsell, setIsUpsell] = useState(false);
 
   useEffect(() => {
     fetchData();
   }, [businessId]);
 
   const fetchData = async () => {
-    const { data } = await supabase.from('categories').select('*').eq('business_id', businessId);
-    if (data) setCategories(data);
+    const { data: cats } = await supabase.from('categories').select('*').eq('business_id', businessId);
+    if (cats) setCategories(cats);
   };
 
   const addCategory = async () => {
@@ -31,7 +33,8 @@ export default function AdminProducts({ businessId }) {
       business_id: businessId,
       category_id: categoryId,
       name: name,
-      price: parseFloat(price)
+      price: parseFloat(price),
+      is_upsell_target: isUpsell
     });
 
     if (error) alert("Error guardando producto: " + error.message);
@@ -39,6 +42,7 @@ export default function AdminProducts({ businessId }) {
       alert("✅ Guardado!");
       setName('');
       setPrice('');
+      setIsUpsell(false);
     }
   };
 
@@ -72,6 +76,11 @@ export default function AdminProducts({ businessId }) {
              <option value="">Selecciona Categoría...</option>
              {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
            </select>
+
+           <label style={{display:'flex', alignItems:'center', gap:'10px', background:'#333', padding:'15px', borderRadius:'10px', cursor:'pointer'}}>
+             <input type="checkbox" checked={isUpsell} onChange={e => setIsUpsell(e.target.checked)} style={{width:'20px', height:'20px'}} />
+             <span>🔥 Marcar como producto Recomendado (Upsell)</span>
+           </label>
 
            <button type="submit" style={{padding:'15px', background:'var(--primary)', color:'white', border:'none', borderRadius:'10px', fontWeight:'bold', fontSize:'16px'}}>
              Agregar Producto
