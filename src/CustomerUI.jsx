@@ -2,17 +2,15 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 
 export default function CustomerUI({ businessId }) {
-  const [view, setView] = useState('landing'); // landing, menu, cart, upsell, status
+  const [view, setView] = useState('landing'); // landing, menu, cart, status
   const [categories, setCategories] = useState([]);
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState([]);
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(false);
   
-  // Smart Upsell State
-  const [contextUpsells, setContextUpsells] = useState([]);
-  const [promoMessage, setPromoMessage] = useState("Agregá esto con 1 toque");
-  const [upsellShown, setUpsellShown] = useState(false);
+  // Inline Real-Time Upsell
+  const [inlineUpsell, setInlineUpsell] = useState(null); // { product, message }
 
   const clientToken = localStorage.getItem("client_token") || crypto.randomUUID();
 
@@ -39,85 +37,118 @@ export default function CustomerUI({ businessId }) {
     if (pReq.data) setProducts(pReq.data);
   };
 
+  const getCatName = (catId) => categories.find(c => c.id === catId)?.name.toLowerCase() || '';
+
   const updateCart = (product, change) => {
     setCart(prev => {
       const existing = prev.find(item => item.product_id === product.id || item.product_id === product.product_id); // accept both structures
+      
+      let nextCart;
+      
       if (existing) {
         const newQty = existing.quantity + change;
-        if (newQty <= 0) return prev.filter(item => item.product_id !== existing.product_id);
-        return prev.map(item => item.product_id === existing.product_id ? { ...item, quantity: newQty } : item);
+        if (newQty <= 0) {
+           nextCart = prev.filter(item => item.product_id !== existing.product_id);
+        } else {
+           nextCart = prev.map(item => item.product_id === existing.product_id ? { ...item, quantity: newQty } : item);
+        }
+      } else {
+        if (change > 0) {
+           nextCart = [...prev, { product_id: product.id || product.product_id, name: product.name, price: Number(product.price), quantity: 1 }];
+        } else {
+           nextCart = prev;
+        }
       }
-      if (change > 0) return [...prev, { product_id: product.id || product.product_id, name: product.name, price: Number(product.price), quantity: 1 }];
-      return prev;
+
+      // SIDE EFFECT: Evaluate Inline Upsell when exactly ADDING items
+      if (change > 0) {
+         // Fire inline logic on next tick to read correct states
+         setTimeout(() => triggerInlineUpsell(product, nextCart), 50);
+      } else {
+         setInlineUpsell(null); // hide immediately if removing items
+      }
+
+      return nextCart;
     });
   };
 
   const calculateTotal = () => cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
-  const getCatName = (catId) => categories.find(c => c.id === catId)?.name.toLowerCase() || '';
+  
+  const triggerInlineUpsell = (addedProduct, currentCart) => {
+    if (window.upsellTimeout) clearTimeout(window.upsellTimeout);
+    
+    const prodId = addedProduct.id || addedProduct.product_id;
+    const fullProduct = products.find(p => p.id === prodId);
+    if (!fullProduct) return;
 
-  const startCheckout = () => {
-    if (upsellShown) {
-       confirmOrder(null);
+    const currentQty = currentCart.find(c => c.product_id === prodId)?.quantity || 0;
+    
+    // RULE LIMIT: If user already has 2+ same items -> do NOT show anything.
+    if (currentQty >= 2) {
+       setInlineUpsell(null);
        return;
     }
 
-    let logicalUpsells = [];
-    let overrideMessage = "Agregá esto con 1 toque";
+    const catName = getCatName(fullProduct.category_id);
+    const isDrink = catName.includes('bebida') || fullProduct.name.toLowerCase().includes('cerveza') || fullProduct.name.toLowerCase().includes('ipa');
+    const isFood = catName.includes('comida') || fullProduct.name.toLowerCase().includes('hamburguesa') || fullProduct.name.toLowerCase().includes('pizza') || fullProduct.name.toLowerCase().includes('papa');
 
-    // Analyzers
-    const hasDrinks = cart.some(c => {
-       const catName = getCatName(products.find(pr => pr.id === c.product_id)?.category_id);
-       return catName.includes('bebida') || c.name.toLowerCase().includes('cerveza') || c.name.toLowerCase().includes('ipa');
+    let suggestion = null;
+    let message = "";
+
+    // CUSTOM LOGIC FIRST (Admin Mapped Description)
+    const conditionalUpsells = products.filter(p => p.is_upsell_target && p.description && p.description.trim().length > 1);
+    const customMatch = conditionalUpsells.find(u => {
+        const magicWord = u.description.toLowerCase().trim();
+        return fullProduct.name.toLowerCase().includes(magicWord) || catName.includes(magicWord);
     });
 
-    const allUpsells = products.filter(p => p.is_upsell_target);
-    const conditionalUpsells = allUpsells.filter(p => p.description && p.description.trim().length > 1);
-    const genericUpsells = allUpsells.filter(p => !p.description || p.description.trim().length <= 1);
-
-    // 0. LINK PERSONALIZADO (Admin Description Mapping)
-    // EXCLUSIVO: Estos productos SOLO saltan si la palabra mágica coincide.
-    const customMatches = conditionalUpsells.filter(u => {
-       const magicWord = u.description.toLowerCase().trim();
-       return cart.some(c => c.name.toLowerCase().includes(magicWord) || getCatName(products.find(pr=>pr.id===c.product_id)?.category_id).includes(magicWord));
-    });
-    
-    if (customMatches.length > 0) {
-       logicalUpsells = customMatches;
-       overrideMessage = "🔥 Recomendación especial para tu pedido:";
+    if (customMatch && !currentCart.some(c => c.product_id === customMatch.id)) {
+       suggestion = customMatch;
+       message = `🔥 Recomendado: Agregá ${customMatch.name}`;
+    } 
+    // IF DRINK -> SUGGEST SAME DRINK (Repeat purchase)
+    else if (isDrink && fullProduct.is_upsell_target) {
+       suggestion = fullProduct;
+       message = "🍺 Llevá 2 y ahorrá viaje";
     }
-
-    // 1. Repeat Purchase (If no custom match, try to upsell identical drink)
-    if (logicalUpsells.length === 0 && hasDrinks) {
-       const cartDrink = cart.find(c => {
-          const catName = getCatName(products.find(pr => pr.id === c.product_id)?.category_id);
-          return catName.includes('bebida') || c.name.toLowerCase().includes('cerveza');
-       });
-       if (cartDrink) {
-          const matchingProduct = products.find(p => p.id === cartDrink.product_id && p.is_upsell_target);
-          if (matchingProduct) {
-             overrideMessage = "¿Estás seguro que solo querés esa cantidad? Nadie toma uno solo...";
-             logicalUpsells.push(matchingProduct);
-          }
+    // IF FOOD -> COMPLEMENTARY ITEM
+    else if (isFood) {
+       if (fullProduct.name.toLowerCase().includes('papa') || fullProduct.name.toLowerCase().includes('frita')) {
+           const cheddar = products.find(p => p.name.toLowerCase().includes('cheddar') && !currentCart.some(c => c.product_id === p.id));
+           if (cheddar) {
+              suggestion = cheddar;
+              message = "🍟 Agregá Cheddar al toque";
+           }
+       } else {
+           const papas = products.find(p => (p.name.toLowerCase().includes('papa') || p.name.toLowerCase().includes('frita')) && p.is_upsell_target && !currentCart.some(c => c.product_id === p.id));
+           if (papas) {
+              suggestion = papas;
+              message = "🍟 Acompañalo con Fritas";
+           }
        }
     }
 
-    // 2. Generic Upsell targets (Fill the rest up to 2 items ONLY WITH GENERICS)
-    if (logicalUpsells.length < 2) {
-       const genericsNotInCart = genericUpsells.filter(p => !cart.some(c => c.product_id === p.id));
-       // Randomize fallbacks to avoid always showing the exact same 2 products
-       const shuffledGenerics = genericsNotInCart.sort(() => 0.5 - Math.random());
-       
-       logicalUpsells = [...logicalUpsells, ...shuffledGenerics].slice(0, 2);
+    // FALLBACK GENERIC
+    if (!suggestion) {
+       const generics = products.filter(p => p.is_upsell_target && (!p.description || p.description.length < 2) && !currentCart.some(c => c.product_id === p.id) && p.id !== prodId);
+       if (generics.length > 0) {
+          suggestion = generics[Math.floor(Math.random() * generics.length)];
+          message = "¡No te olvides de agregar esto!";
+       }
     }
 
-    if (logicalUpsells.length > 0) {
-      setPromoMessage(overrideMessage);
-      setContextUpsells(logicalUpsells.slice(0,2));
-      setUpsellShown(true);
-      setView('upsell');
+    if (suggestion) {
+       setInlineUpsell({ product: suggestion, message });
+       window.upsellTimeout = setTimeout(() => setInlineUpsell(null), 6000); // UI Behavior: Must disappear automatically
     } else {
-      confirmOrder(null);
+       setInlineUpsell(null);
     }
+  };
+
+  const startCheckout = () => {
+    // No more black modal. Just execute directly to DB.
+    confirmOrder(null);
   };
 
   const confirmOrder = async (additionalItem = null) => {
@@ -153,13 +184,13 @@ export default function CustomerUI({ businessId }) {
 
       setOrder(updatedOrder);
       setCart([]);
+      setInlineUpsell(null); // clean floating states
       setView('status');
     } catch (e) {
       alert("Error: " + e.message);
     }
     setLoading(false);
   };
-
 
   // VIEWS ==========================================================
 
@@ -205,53 +236,11 @@ export default function CustomerUI({ businessId }) {
         )}
 
         <div style={{marginTop:'auto', paddingTop:'30px', display:'flex', gap:'10px'}}>
-           <button onClick={() => setView('menu')} style={{padding:'20px', borderRadius:'15px', background:'#222', color:'white', border:'none', fontSize:'16px', fontWeight:'bold', width:'30%'}}>Cerrar</button>
+           <button onClick={() => setView('menu')} style={{padding:'20px', borderRadius:'15px', background:'#222', color:'white', border:'none', fontSize:'16px', fontWeight:'bold', width:'30%'}}>Volver</button>
            <button onClick={startCheckout} disabled={cart.length === 0 || loading} style={{padding:'20px', borderRadius:'15px', background:'var(--primary)', color:'white', border:'none', fontSize:'18px', fontWeight:'black', flexGrow:1, boxShadow:'0 5px 15px rgba(255,69,0,0.3)'}}>
-             {loading ? 'Preparando...' : 'Comprar 👉'}
+             {loading ? 'Fijando Pedido...' : 'Comprar 👉'}
            </button>
         </div>
-      </div>
-    );
-  }
-
-  // SMART UPSELL SCREEN
-  if (view === 'upsell') {
-    const addedAnyUpsell = contextUpsells.some(u => cart.some(c => c.product_id === u.id));
-
-    return (
-      <div style={{padding:'30px', textAlign:'center', minHeight:'100vh', display:'flex', flexDirection:'column', justifyContent:'center'}}>
-         <div style={{display:'inline-block', fontSize:'50px', marginBottom:'15px'}}>🍺</div>
-         <h1 style={{color:'var(--primary)', fontSize:'36px', marginBottom:'10px'}}>¡Esperá!</h1>
-         <p style={{fontSize:'22px', color:'white', marginBottom:'40px', lineHeight:'1.4', padding:'0 10px', fontWeight:'bold'}}>{promoMessage}</p>
-         
-         <div style={{display:'flex', flexDirection:'column', gap:'15px', marginBottom:'40px'}}>
-            {contextUpsells.map(u => {
-               const isAdded = cart.some(c => c.product_id === u.id);
-               return (
-                 <div key={u.id} style={{background:'#1e1e1e', padding:'25px', borderRadius:'20px', border:'2px solid var(--primary)', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-                    <div style={{textAlign:'left'}}>
-                       <h3 style={{margin:0, fontSize:'22px', color:'white'}}>{u.name}</h3>
-                       <p style={{margin:0, color:'var(--success)', fontWeight:'bold', fontSize:'18px', marginTop:'5px'}}>${Number(u.price)}</p>
-                    </div>
-                    <button 
-                       onClick={() => updateCart(u, 1)} 
-                       disabled={loading || isAdded} 
-                       style={{background: isAdded ? '#28a745' : 'var(--primary)', color:'white', border:'none', width:'55px', height:'55px', borderRadius:'15px', fontSize:'28px', fontWeight:'black', cursor: isAdded ? 'default' : 'pointer', boxShadow: isAdded ? 'none' : '0 5px 15px rgba(237, 108, 2, 0.4)'}}
-                    >
-                       {isAdded ? '✔️' : '+'}
-                    </button>
-                 </div>
-               );
-            })}
-         </div>
-
-         <button 
-            onClick={() => addedAnyUpsell ? setView('cart') : confirmOrder(null)} 
-            disabled={loading} 
-            style={{width:'100%', padding:'22px', background: addedAnyUpsell ? 'var(--success)' : 'transparent', color: addedAnyUpsell ? 'white' : '#888', border: addedAnyUpsell ? 'none' : '2px solid #444', borderRadius:'15px', fontSize:'18px', fontWeight:'bold', marginTop:'auto', cursor:'pointer'}}
-         >
-            {addedAnyUpsell ? `Revisar carrito actualizado 👉` : `No gracias, ir a pagar ($${calculateTotal()})`}
-         </button>
       </div>
     );
   }
@@ -278,7 +267,7 @@ export default function CustomerUI({ businessId }) {
   }
 
   return (
-    <div style={{paddingBottom: '120px'}}>
+    <div style={{paddingBottom: '140px'}}>
       <div className="store-header" style={{position:'static'}}>
         <h2>Menú AlToque</h2>
       </div>
@@ -287,7 +276,7 @@ export default function CustomerUI({ businessId }) {
 
       <div className="product-list">
         {categories.map(cat => {
-          const prods = products.filter(p => p.category_id === cat.id && !p.is_upsell_target);
+          const prods = products.filter(p => p.category_id === cat.id);
           if (prods.length === 0) return null;
           
           return (
@@ -299,9 +288,6 @@ export default function CustomerUI({ businessId }) {
                   <div key={p.id} className="product-card">
                     <div className="product-info">
                       <h4 style={{margin:'0 0 5px 0'}}>{p.name}</h4>
-                      {cartItem && cartItem.quantity === 1 && (getCatName(p.category_id).includes('bebida') || p.name.toLowerCase().includes('cerveza')) && (
-                        <span style={{fontSize:'12px', background:'#333', color:'#888', padding:'2px 8px', borderRadius:'10px', display:'inline-block', marginBottom:'5px'}}>🍺 Llevá 2 y ahorrá viaje</span>
-                      )}
                       <p className="product-price" style={{margin:0}}>${Number(p.price)}</p>
                     </div>
                     
@@ -323,6 +309,23 @@ export default function CustomerUI({ businessId }) {
           );
         })}
       </div>
+
+      {/* FLOATING INLINE UPSELL */}
+      {inlineUpsell && cart.length > 0 && view === 'menu' && (
+        <div style={{position:'fixed', bottom:'100px', left:'10px', right:'10px', background:'#242424', border:'2px solid var(--primary)', borderRadius:'12px', padding:'15px', color:'white', display:'flex', justifyContent:'space-between', alignItems:'center', zIndex: 1000, boxShadow:'0 -5px 20px rgba(0,0,0,0.5)', animation:'slideUp 0.3s ease-out'}}>
+           <div>
+              <p style={{margin:0, fontSize:'14px', fontWeight:'bold', color:'var(--primary)'}}>{inlineUpsell.message}</p>
+              <h4 style={{margin:'5px 0 0 0', fontSize:'16px'}}>{inlineUpsell.product.name} <span style={{color:'var(--success)'}}>+${inlineUpsell.product.price}</span></h4>
+           </div>
+           <button onClick={() => {
+               updateCart(inlineUpsell.product, 1);
+               clearTimeout(window.upsellTimeout);
+               setInlineUpsell(null); // Force dissolve after click
+           }} style={{background:'var(--primary)', color:'white', border:'none', borderRadius:'8px', padding:'10px 15px', fontWeight:'bold', fontSize:'14px', cursor:'pointer', whiteSpace:'nowrap'}}>
+             + Agregar
+           </button>
+        </div>
+      )}
 
       {cart.length > 0 && (
         <div className="sticky-cart" style={{display:'flex', gap:'10px', justifyContent:'center'}}>
