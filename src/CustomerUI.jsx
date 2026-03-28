@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 
 export default function CustomerUI({ businessId }) {
-  const [view, setView] = useState('landing');
+  const [view, setView] = useState('landing'); // landing, menu, cart, upsell, status
   const [categories, setCategories] = useState([]);
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState([]);
@@ -11,6 +11,8 @@ export default function CustomerUI({ businessId }) {
   
   // Smart Upsell State
   const [contextUpsells, setContextUpsells] = useState([]);
+  const [promoMessage, setPromoMessage] = useState("Agregá esto con 1 toque");
+  const [upsellShown, setUpsellShown] = useState(false);
 
   const clientToken = localStorage.getItem("client_token") || crypto.randomUUID();
 
@@ -22,12 +24,9 @@ export default function CustomerUI({ businessId }) {
   useEffect(() => {
     if (!order) return;
     const channel = supabase.channel(`order_updates`)
-      .on('postgres_changes', { 
-        event: 'UPDATE', schema: 'public', table: 'orders', filter: `id=eq.${order.id}` 
-      }, (payload) => {
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders', filter: `id=eq.${order.id}` }, (payload) => {
         setOrder(payload.new);
-      })
-      .subscribe();
+      }).subscribe();
     return () => { supabase.removeChannel(channel) };
   }, [order?.id]);
 
@@ -42,13 +41,13 @@ export default function CustomerUI({ businessId }) {
 
   const updateCart = (product, change) => {
     setCart(prev => {
-      const existing = prev.find(item => item.product_id === product.id);
+      const existing = prev.find(item => item.product_id === product.id || item.product_id === product.product_id); // accept both structures
       if (existing) {
         const newQty = existing.quantity + change;
-        if (newQty <= 0) return prev.filter(item => item.product_id !== product.id);
-        return prev.map(item => item.product_id === product.id ? { ...item, quantity: newQty } : item);
+        if (newQty <= 0) return prev.filter(item => item.product_id !== existing.product_id);
+        return prev.map(item => item.product_id === existing.product_id ? { ...item, quantity: newQty } : item);
       }
-      if (change > 0) return [...prev, { product_id: product.id, name: product.name, price: Number(product.price), quantity: 1 }];
+      if (change > 0) return [...prev, { product_id: product.id || product.product_id, name: product.name, price: Number(product.price), quantity: 1 }];
       return prev;
     });
   };
@@ -57,46 +56,67 @@ export default function CustomerUI({ businessId }) {
   const getCatName = (catId) => categories.find(c => c.id === catId)?.name.toLowerCase() || '';
 
   const startCheckout = () => {
+    if (upsellShown) {
+       confirmOrder(null);
+       return;
+    }
+
     let logicalUpsells = [];
+    let overrideMessage = "Agregá esto con 1 toque";
 
     // Analyzers
-    const hasPapas = cart.some(c => c.name.toLowerCase().includes('papa') || c.name.toLowerCase().includes('frita'));
-    const hasFood = cart.some(c => {
-       const p = products.find(pr => pr.id === c.product_id);
-       return p && (getCatName(p.category_id).includes('comida') || c.name.toLowerCase().includes('hamburguesa') || c.name.toLowerCase().includes('pizza'));
+    const hasDrinks = cart.some(c => {
+       const catName = getCatName(products.find(pr => pr.id === c.product_id)?.category_id);
+       return catName.includes('bebida') || c.name.toLowerCase().includes('cerveza') || c.name.toLowerCase().includes('ipa');
     });
-    const cartDrinks = cart.filter(c => {
-       const p = products.find(pr => pr.id === c.product_id);
-       return p && (getCatName(p.category_id).includes('bebida') || c.name.toLowerCase().includes('cerveza') || c.name.toLowerCase().includes('ipa'));
-    });
-    const hasDrinks = cartDrinks.length > 0;
 
-    // RULE 1: If Papas -> Suggest Cheddar
-    if (hasPapas) {
-       const cheddarMatch = products.find(p => p.name.toLowerCase().includes('cheddar') && !cart.some(c => c.product_id === p.id));
-       if (cheddarMatch) logicalUpsells.push(cheddarMatch);
+    const allUpsells = products.filter(p => p.is_upsell_target);
+    const conditionalUpsells = allUpsells.filter(p => p.description && p.description.trim().length > 1);
+    const genericUpsells = allUpsells.filter(p => !p.description || p.description.trim().length <= 1);
+
+    // 0. LINK PERSONALIZADO (Admin Description Mapping)
+    // EXCLUSIVO: Estos productos SOLO saltan si la palabra mágica coincide.
+    const customMatches = conditionalUpsells.filter(u => {
+       const magicWord = u.description.toLowerCase().trim();
+       return cart.some(c => c.name.toLowerCase().includes(magicWord) || getCatName(products.find(pr=>pr.id===c.product_id)?.category_id).includes(magicWord));
+    });
+    
+    if (customMatches.length > 0) {
+       logicalUpsells = customMatches;
+       overrideMessage = "🔥 Recomendación especial para tu pedido:";
     }
 
-    // RULE 2: If Food but NO Drinks -> Suggest first available Drink
-    if (hasFood && !hasDrinks) {
-       const firstDrink = products.find(p => getCatName(p.category_id).includes('bebida') && !cart.some(c => c.product_id === p.id));
-       if (firstDrink) logicalUpsells.push(firstDrink);
-    }
-
-    // RULE 3: If Drinks -> Suggest the exact same drink they already ordered (Repeat purchase)
-    if (hasDrinks && logicalUpsells.length < 2) {
-       const repeatingDrinkId = cartDrinks[0].product_id;
-       const repeatingDrink = products.find(p => p.id === repeatingDrinkId);
-       if (repeatingDrink && !logicalUpsells.some(u => u.id === repeatingDrink.id)) {
-           logicalUpsells.push(repeatingDrink);
+    // 1. Repeat Purchase (If no custom match, try to upsell identical drink)
+    if (logicalUpsells.length === 0 && hasDrinks) {
+       const cartDrink = cart.find(c => {
+          const catName = getCatName(products.find(pr => pr.id === c.product_id)?.category_id);
+          return catName.includes('bebida') || c.name.toLowerCase().includes('cerveza');
+       });
+       if (cartDrink) {
+          const matchingProduct = products.find(p => p.id === cartDrink.product_id && p.is_upsell_target);
+          if (matchingProduct) {
+             overrideMessage = "¿Estás seguro que solo querés esa cantidad? Nadie toma uno solo...";
+             logicalUpsells.push(matchingProduct);
+          }
        }
     }
 
+    // 2. Generic Upsell targets (Fill the rest up to 2 items ONLY WITH GENERICS)
+    if (logicalUpsells.length < 2) {
+       const genericsNotInCart = genericUpsells.filter(p => !cart.some(c => c.product_id === p.id));
+       // Randomize fallbacks to avoid always showing the exact same 2 products
+       const shuffledGenerics = genericsNotInCart.sort(() => 0.5 - Math.random());
+       
+       logicalUpsells = [...logicalUpsells, ...shuffledGenerics].slice(0, 2);
+    }
+
     if (logicalUpsells.length > 0) {
-      setContextUpsells(logicalUpsells.slice(0, 2));
+      setPromoMessage(overrideMessage);
+      setContextUpsells(logicalUpsells.slice(0,2));
+      setUpsellShown(true);
       setView('upsell');
     } else {
-      confirmOrder();
+      confirmOrder(null);
     }
   };
 
@@ -111,12 +131,11 @@ export default function CustomerUI({ businessId }) {
 
       let finalCart = [...cart];
       if (additionalItem) {
-        // Find if already exists in cart to increase qty, else push
-        const existingIdx = finalCart.findIndex(c => c.product_id === additionalItem.id);
+        const existingIdx = finalCart.findIndex(c => c.product_id === additionalItem.id || c.product_id === additionalItem.product_id);
         if (existingIdx >= 0) {
            finalCart[existingIdx].quantity += 1;
         } else {
-           finalCart.push({ product_id: additionalItem.id, quantity: 1, price: Number(additionalItem.price) });
+           finalCart.push({ product_id: additionalItem.id || additionalItem.product_id, quantity: 1, price: Number(additionalItem.price) });
         }
       }
 
@@ -141,6 +160,9 @@ export default function CustomerUI({ businessId }) {
     setLoading(false);
   };
 
+
+  // VIEWS ==========================================================
+
   if (view === 'landing') {
     return (
       <div className="landing-screen">
@@ -151,27 +173,85 @@ export default function CustomerUI({ businessId }) {
     );
   }
 
+  // INTERMEDIARY: CART REVIEW SCREEN
+  if (view === 'cart') {
+    return (
+      <div style={{padding:'20px', minHeight:'100vh', display:'flex', flexDirection:'column', background:'#121212', color:'white'}}>
+        <h2 style={{color:'white', marginBottom:'20px', borderBottom:'1px solid #333', paddingBottom:'20px'}}>Revisa tu Pedido</h2>
+        
+        {cart.length === 0 ? (
+           <div style={{textAlign:'center', color:'#888', marginTop:'50px'}}>Tu carrito está vacío. <br/><br/><button onClick={() => setView('menu')} className="btn-outline">Volver al Menú</button></div>
+        ) : (
+           <div style={{display:'flex', flexDirection:'column', gap:'15px', flexGrow:1}}>
+              {cart.map(item => (
+                 <div key={item.product_id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', background:'#1e1e1e', padding:'15px', borderRadius:'15px', border:'1px solid #333'}}>
+                    <div>
+                       <h4 style={{margin:'0 0 5px 0', color:'white', fontSize:'18px'}}>{item.name}</h4>
+                       <span style={{color:'var(--success)', fontWeight:'bold'}}>${item.price * item.quantity}</span>
+                    </div>
+                    <div style={{display:'flex', alignItems:'center', gap:'15px', background:'#111', padding:'5px', borderRadius:'10px'}}>
+                       <button onClick={() => updateCart({product_id: item.product_id}, -1)} style={{background:'transparent', color:'white', border:'none', width:'35px', height:'35px', fontSize:'22px'}}>-</button>
+                       <span style={{fontSize:'18px', fontWeight:'bold', color:'white'}}>{item.quantity}</span>
+                       <button onClick={() => updateCart({product_id: item.product_id}, 1)} style={{background:'transparent', color:'white', border:'none', width:'35px', height:'35px', fontSize:'22px'}}>+</button>
+                    </div>
+                 </div>
+              ))}
+              
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:'30px', borderTop:'2px dashed #444', paddingTop:'20px'}}>
+                 <h2 style={{color:'white', margin:0}}>Total:</h2>
+                 <h2 style={{color:'var(--success)', margin:0, fontSize:'28px'}}>${calculateTotal()}</h2>
+              </div>
+           </div>
+        )}
+
+        <div style={{marginTop:'auto', paddingTop:'30px', display:'flex', gap:'10px'}}>
+           <button onClick={() => setView('menu')} style={{padding:'20px', borderRadius:'15px', background:'#222', color:'white', border:'none', fontSize:'16px', fontWeight:'bold', width:'30%'}}>Cerrar</button>
+           <button onClick={startCheckout} disabled={cart.length === 0 || loading} style={{padding:'20px', borderRadius:'15px', background:'var(--primary)', color:'white', border:'none', fontSize:'18px', fontWeight:'black', flexGrow:1, boxShadow:'0 5px 15px rgba(255,69,0,0.3)'}}>
+             {loading ? 'Preparando...' : 'Comprar 👉'}
+           </button>
+        </div>
+      </div>
+    );
+  }
+
   // SMART UPSELL SCREEN
   if (view === 'upsell') {
+    const addedAnyUpsell = contextUpsells.some(u => cart.some(c => c.product_id === u.id));
+
     return (
       <div style={{padding:'30px', textAlign:'center', minHeight:'100vh', display:'flex', flexDirection:'column', justifyContent:'center'}}>
          <div style={{display:'inline-block', fontSize:'50px', marginBottom:'15px'}}>🍺</div>
-         <h1 style={{color:'var(--primary)', fontSize:'36px', marginBottom:'10px'}}>Ya que estás...</h1>
-         <p style={{fontSize:'20px', color:'#ccc', marginBottom:'40px'}}>Agregá esto con 1 toque</p>
+         <h1 style={{color:'var(--primary)', fontSize:'36px', marginBottom:'10px'}}>¡Esperá!</h1>
+         <p style={{fontSize:'22px', color:'white', marginBottom:'40px', lineHeight:'1.4', padding:'0 10px', fontWeight:'bold'}}>{promoMessage}</p>
          
          <div style={{display:'flex', flexDirection:'column', gap:'15px', marginBottom:'40px'}}>
-            {contextUpsells.map(u => (
-               <div key={u.id} style={{background:'#1e1e1e', padding:'25px', borderRadius:'20px', border:'2px solid var(--primary)', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-                  <div style={{textAlign:'left'}}>
-                     <h3 style={{margin:0, fontSize:'22px', color:'white'}}>{u.name}</h3>
-                     <p style={{margin:0, color:'var(--success)', fontWeight:'bold', fontSize:'18px', marginTop:'5px'}}>${Number(u.price)}</p>
-                  </div>
-                  <button onClick={() => confirmOrder(u)} style={{background:'var(--primary)', color:'white', border:'none', width:'55px', height:'55px', borderRadius:'15px', fontSize:'28px', fontWeight:'black', cursor:'pointer', boxShadow:'0 5px 15px rgba(237, 108, 2, 0.4)'}}>+</button>
-               </div>
-            ))}
+            {contextUpsells.map(u => {
+               const isAdded = cart.some(c => c.product_id === u.id);
+               return (
+                 <div key={u.id} style={{background:'#1e1e1e', padding:'25px', borderRadius:'20px', border:'2px solid var(--primary)', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                    <div style={{textAlign:'left'}}>
+                       <h3 style={{margin:0, fontSize:'22px', color:'white'}}>{u.name}</h3>
+                       <p style={{margin:0, color:'var(--success)', fontWeight:'bold', fontSize:'18px', marginTop:'5px'}}>${Number(u.price)}</p>
+                    </div>
+                    <button 
+                       onClick={() => updateCart(u, 1)} 
+                       disabled={loading || isAdded} 
+                       style={{background: isAdded ? '#28a745' : 'var(--primary)', color:'white', border:'none', width:'55px', height:'55px', borderRadius:'15px', fontSize:'28px', fontWeight:'black', cursor: isAdded ? 'default' : 'pointer', boxShadow: isAdded ? 'none' : '0 5px 15px rgba(237, 108, 2, 0.4)'}}
+                    >
+                       {isAdded ? '✔️' : '+'}
+                    </button>
+                 </div>
+               );
+            })}
          </div>
 
-         <button onClick={() => confirmOrder(null)} style={{width:'100%', padding:'22px', background:'transparent', color:'#888', border:'2px solid #444', borderRadius:'15px', fontSize:'18px', fontWeight:'bold', marginTop:'auto', cursor:'pointer'}}>No gracias, ir a pagar 👉</button>
+         <button 
+            onClick={() => addedAnyUpsell ? setView('cart') : confirmOrder(null)} 
+            disabled={loading} 
+            style={{width:'100%', padding:'22px', background: addedAnyUpsell ? 'var(--success)' : 'transparent', color: addedAnyUpsell ? 'white' : '#888', border: addedAnyUpsell ? 'none' : '2px solid #444', borderRadius:'15px', fontSize:'18px', fontWeight:'bold', marginTop:'auto', cursor:'pointer'}}
+         >
+            {addedAnyUpsell ? `Revisar carrito actualizado 👉` : `No gracias, ir a pagar ($${calculateTotal()})`}
+         </button>
       </div>
     );
   }
@@ -207,7 +287,6 @@ export default function CustomerUI({ businessId }) {
 
       <div className="product-list">
         {categories.map(cat => {
-          // Filtrado clave: Escondemos de la lista principal los que están marcados como "ventas encubiertas" o Upsells (is_upsell_target)
           const prods = products.filter(p => p.category_id === cat.id && !p.is_upsell_target);
           if (prods.length === 0) return null;
           
@@ -221,7 +300,7 @@ export default function CustomerUI({ businessId }) {
                     <div className="product-info">
                       <h4 style={{margin:'0 0 5px 0'}}>{p.name}</h4>
                       {cartItem && cartItem.quantity === 1 && (getCatName(p.category_id).includes('bebida') || p.name.toLowerCase().includes('cerveza')) && (
-                        <span style={{fontSize:'12px', background:'#333', color:'#888', padding:'2px 8px', borderRadius:'10px', display:'inline-block', marginBottom:'5px'}}>🍺 Llevá 2 y no des más vueltas</span>
+                        <span style={{fontSize:'12px', background:'#333', color:'#888', padding:'2px 8px', borderRadius:'10px', display:'inline-block', marginBottom:'5px'}}>🍺 Llevá 2 y ahorrá viaje</span>
                       )}
                       <p className="product-price" style={{margin:0}}>${Number(p.price)}</p>
                     </div>
@@ -247,8 +326,8 @@ export default function CustomerUI({ businessId }) {
 
       {cart.length > 0 && (
         <div className="sticky-cart" style={{display:'flex', gap:'10px', justifyContent:'center'}}>
-          <button className="btn-primary" onClick={startCheckout} disabled={loading} style={{fontSize:'20px', padding:'20px'}}>
-            {loading ? "Generando..." : `Ver pedido ($${calculateTotal()})`}
+          <button className="btn-primary" onClick={() => setView('cart')} disabled={loading} style={{fontSize:'20px', padding:'20px'}}>
+            Ver pedido ($ {calculateTotal()})
           </button>
         </div>
       )}
