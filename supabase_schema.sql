@@ -2,7 +2,7 @@
 DO $$ DECLARE
     r RECORD;
 BEGIN
-    FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename IN ('payments', 'order_items', 'orders', 'promotion_targets', 'promotions', 'products', 'categories', 'business_sequences', 'businesses')) LOOP
+    FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename IN ('order_item_modifiers', 'product_modifiers', 'payments', 'order_items', 'orders', 'promotion_targets', 'promotions', 'products', 'categories', 'business_sequences', 'businesses')) LOOP
         EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE';
     END LOOP;
 END $$;
@@ -23,6 +23,11 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE public.businesses (
     id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
     name TEXT NOT NULL,
+    -- Business type: BAR (full ordering flow) | SHOP (catalog + WhatsApp lead gen)
+    business_type TEXT NOT NULL DEFAULT 'BAR' CHECK (business_type IN ('BAR', 'SHOP')),
+    whatsapp_number TEXT, -- For SHOP type: number to send WhatsApp inquiries to
+    -- Order output: SCREEN (kitchen/bar screens) | PRINT (auto-print on PAID) | BOTH
+    order_output_mode TEXT NOT NULL DEFAULT 'SCREEN' CHECK (order_output_mode IN ('SCREEN', 'PRINT', 'BOTH')),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -57,8 +62,17 @@ CREATE TABLE public.products (
     deleted_at TIMESTAMPTZ -- Soft Delete Support
 );
 
+CREATE TABLE public.product_modifiers (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    product_id UUID NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    price_delta DECIMAL(10,2) DEFAULT 0,
+    sort_order INT DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- ==========================================
--- 3. PROMICIONES (Sistema Escalable Relacional)
+-- 3. PROMOCIONES (Sistema Escalable Relacional)
 -- ==========================================
 
 CREATE TABLE public.promotions (
@@ -80,7 +94,6 @@ CREATE TABLE public.promotion_targets (
     promotion_id UUID NOT NULL REFERENCES public.promotions(id) ON DELETE CASCADE,
     category_id UUID REFERENCES public.categories(id) ON DELETE CASCADE,
     product_id UUID REFERENCES public.products(id) ON DELETE CASCADE,
-    -- Ambos nulos permiten Promociones Globales. Si hay uno referenciado, el otro debe ser nulo.
     CHECK (
         (category_id IS NULL AND product_id IS NULL) OR
         (category_id IS NOT NULL AND product_id IS NULL) OR 
@@ -90,7 +103,7 @@ CREATE TABLE public.promotion_targets (
 );
 
 -- ==========================================
--- 4. FLUJO DE VENTAS Y PAGOS
+-- 4. FLUJO DE VENTAS Y PAGOS (BAR only)
 -- ==========================================
 
 CREATE TABLE public.orders (
@@ -99,6 +112,7 @@ CREATE TABLE public.orders (
     business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
     customer_name TEXT,
     customer_phone TEXT,
+    table_number INT,
     order_type TEXT NOT NULL CHECK (order_type IN ('PICKUP', 'TABLE', 'DELIVERY')) DEFAULT 'PICKUP',
     status TEXT NOT NULL CHECK (
         status IN (
@@ -124,10 +138,19 @@ CREATE TABLE public.orders (
 CREATE TABLE public.order_items (
     id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
     order_id UUID NOT NULL REFERENCES public.orders(id) ON DELETE CASCADE,
-    product_id UUID NOT NULL REFERENCES public.products(id) ON DELETE RESTRICT,
+    product_id UUID REFERENCES public.products(id) ON DELETE SET NULL, -- SET NULL preserves order history when product is deleted
     quantity INT NOT NULL DEFAULT 1 CHECK (quantity > 0),
     unit_price DECIMAL(10,2) NOT NULL,
     subtotal DECIMAL(10,2) NOT NULL,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE public.order_item_modifiers (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    order_item_id UUID NOT NULL REFERENCES public.order_items(id) ON DELETE CASCADE,
+    modifier_name TEXT NOT NULL,
+    price_delta DECIMAL(10,2) DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -150,18 +173,16 @@ CREATE TABLE public.payments (
 CREATE INDEX idx_orders_business_status ON public.orders(business_id, status);
 CREATE INDEX idx_orders_created_at ON public.orders(created_at DESC);
 CREATE INDEX idx_payments_order_id ON public.payments(order_id);
--- Unique index para evitar Múltiples pagos en una misma orden
 CREATE UNIQUE INDEX idx_payments_single_approved ON public.payments(order_id) WHERE status = 'APPROVED';
--- Optimización Promociones
 CREATE INDEX idx_promotions_active_time ON public.promotions(business_id, active, start_time, end_time);
--- Filtro catálogo Soft Delete
 CREATE INDEX idx_products_deleted_at ON public.products(business_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_businesses_type ON public.businesses(business_type);
 
 -- ==========================================
 -- 6. TRIGGERS Y LÓGICAS
 -- ==========================================
 
--- 6.1 Secuencia Número de Ticket Independiente (Concurrency-Safe SELECT FOR UPDATE)
+-- 6.1 Secuencia Número de Ticket Independiente
 CREATE OR REPLACE FUNCTION set_display_number()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -191,7 +212,7 @@ FOR EACH ROW
 EXECUTE FUNCTION set_display_number();
 
 
--- 6.2 Data Integrity: Bloqueo modificaciones Order Items si orden cerró o pasó de estado
+-- 6.2 Data Integrity: Bloqueo modificaciones Order Items
 CREATE OR REPLACE FUNCTION enforce_order_items_lock()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -241,27 +262,18 @@ CREATE OR REPLACE FUNCTION validate_order_status_transition()
 RETURNS TRIGGER AS $$
 BEGIN
     NEW.updated_at = NOW();
-
-    -- Reglas de Cancelación
     IF NEW.status = 'CANCELLED' AND OLD.status IN ('DELIVERED', 'CANCELLED') THEN
         RAISE EXCEPTION 'Cannot cancel an already completed or cancelled order.';
     END IF;
-
-    -- Regla IN_PREPARATION: Solo si está pagado
     IF NEW.status = 'IN_PREPARATION' AND OLD.status != 'PAID' THEN
         RAISE EXCEPTION 'Order STRICTLY MUST be PAID before IN_PREPARATION';
     END IF;
-
-    -- Analytics Auto-fill: Set paid_at if transitioning to PAID
     IF NEW.status = 'PAID' AND OLD.status != 'PAID' THEN
         NEW.paid_at = NOW();
     END IF;
-
-    -- Bloqueo mutaciones post finalización
     IF OLD.status IN ('DELIVERED', 'CANCELLED') AND NEW.status NOT IN ('DELIVERED', 'CANCELLED') THEN
         RAISE EXCEPTION 'Cannot change status of a closed order';
     END IF;
-
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -273,7 +285,7 @@ WHEN (OLD.status IS DISTINCT FROM NEW.status)
 EXECUTE FUNCTION validate_order_status_transition();
 
 
--- 6.5 Auto-Timestamps básicos
+-- 6.5 Auto-Timestamps
 CREATE OR REPLACE FUNCTION update_modified_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -286,3 +298,14 @@ CREATE TRIGGER update_products_modtime BEFORE UPDATE ON public.products FOR EACH
 CREATE TRIGGER update_categories_modtime BEFORE UPDATE ON public.categories FOR EACH ROW EXECUTE FUNCTION update_modified_column();
 CREATE TRIGGER update_payments_modtime BEFORE UPDATE ON public.payments FOR EACH ROW EXECUTE FUNCTION update_modified_column();
 CREATE TRIGGER update_promotions_modtime BEFORE UPDATE ON public.promotions FOR EACH ROW EXECUTE FUNCTION update_modified_column();
+CREATE TRIGGER update_businesses_modtime BEFORE UPDATE ON public.businesses FOR EACH ROW EXECUTE FUNCTION update_modified_column();
+
+-- ==========================================
+-- MIGRATION HELPER (if running on existing DB)
+-- ==========================================
+-- Run these if you already have a 'businesses' table and don't want to recreate:
+-- ALTER TABLE public.businesses ADD COLUMN IF NOT EXISTS business_type TEXT NOT NULL DEFAULT 'BAR' CHECK (business_type IN ('BAR', 'SHOP'));
+-- ALTER TABLE public.businesses ADD COLUMN IF NOT EXISTS whatsapp_number TEXT;
+-- ALTER TABLE public.order_items ADD COLUMN IF NOT EXISTS notes TEXT;
+-- CREATE TABLE IF NOT EXISTS public.product_modifiers ( ... ); -- see above
+-- CREATE TABLE IF NOT EXISTS public.order_item_modifiers ( ... ); -- see above
