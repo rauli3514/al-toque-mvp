@@ -213,6 +213,7 @@ function CustomersPanel({ businessId, businessName }) {
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [broadcastMsg, setBroadcastMsg] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     fetchCustomers();
@@ -229,6 +230,13 @@ function CustomersPanel({ businessId, businessName }) {
     setLoading(false);
   };
 
+  const filtered = customers.filter(c => {
+    const s = searchTerm.toLowerCase();
+    return (c.name || '').toLowerCase().includes(s) || 
+           (c.phone || '').includes(s) || 
+           (c.last_items || '').toLowerCase().includes(s);
+  });
+
   const handleSalute = (c) => {
     const clean = c.phone.replace(/\D/g, '');
     const defaultMsg = `¡Hola ${c.name || ''}! Te saludamos de *${businessName}* 🍺`;
@@ -244,6 +252,19 @@ function CustomersPanel({ businessId, businessName }) {
         <span style={{ fontSize: '12px', color: '#555', fontWeight: '700', background: '#111', padding: '4px 10px', borderRadius: '20px' }}>
           {customers.length} registrados
         </span>
+      </div>
+
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+        <input 
+          placeholder="🔍 Buscar por nombre, cel o producto..."
+          value={searchTerm}
+          onChange={e => setSearchTerm(e.target.value)}
+          style={{ flex: 1, background: '#111', border: '1px solid #222', borderRadius: '10px', padding: '10px 14px', color: 'white', fontSize: '13px', outline: 'none' }}
+        />
+        {searchTerm && (
+          <button onClick={() => setSearchTerm('')} style={{ background: '#1a1a1a', color: '#888', border: 'none', borderRadius: '10px', padding: '0 12px', fontSize: '12px', fontWeight: '800', cursor: 'pointer' }}>✕</button>
+        )}
       </div>
 
       {/* Broadcast Message Box */}
@@ -269,7 +290,7 @@ function CustomersPanel({ businessId, businessName }) {
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {customers.map(c => {
+          {filtered.map(c => {
             const lastDate = c.last_order_at ? new Date(c.last_order_at).toLocaleDateString('es-AR') : '—';
             return (
               <div key={c.id} style={{ background: '#0e0e0e', border: '1px solid #1a1a1a', borderRadius: '16px', padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -278,11 +299,18 @@ function CustomersPanel({ businessId, businessName }) {
                     <span style={{ fontWeight: '900', fontSize: '16px', color: 'white' }}>{c.name || 'Cliente'}</span>
                     <span style={{ fontSize: '11px', color: '#333' }}>{c.phone}</span>
                   </div>
-                  <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                    <span style={{ fontSize: '12px', color: '#22c55e', fontWeight: '800' }}>
-                       🔥 {c.total_orders} pedido{c.total_orders !== 1 ? 's' : ''}
-                    </span>
-                    <span style={{ fontSize: '11px', color: '#444' }}>Último: {lastDate}</span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                      <span style={{ fontSize: '12px', color: '#22c55e', fontWeight: '800' }}>
+                         🔥 {c.total_orders} pedido{c.total_orders !== 1 ? 's' : ''}
+                      </span>
+                      <span style={{ fontSize: '11px', color: '#444' }}>Último: {lastDate}</span>
+                    </div>
+                    {c.last_items && (
+                      <div style={{ fontSize: '12px', color: '#888', fontStyle: 'italic', background: '#151515', padding: '4px 8px', borderRadius: '6px', marginTop: '2px' }}>
+                        🥡 {c.last_items}
+                      </div>
+                    )}
                   </div>
                 </div>
                 
