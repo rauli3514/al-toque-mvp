@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
 import { printOrder } from './printOrder';
-import { getLoyaltyTier, openWhatsAppLoyalty, fetchCustomer, upsertCustomer } from './customerRetention';
+import { getLoyaltyTier, openWhatsAppLoyalty, fetchCustomer, upsertCustomer, normalizePhone } from './customerRetention';
 
 // All active statuses this view tracks
 const IN_SCOPE = ['PENDING_PAYMENT', 'PENDING_PAYMENT_CASH', 'PAID', 'IN_PREPARATION', 'READY'];

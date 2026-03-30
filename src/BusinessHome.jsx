@@ -214,21 +214,43 @@ function CustomersPanel({ businessId, businessName }) {
   const [loading, setLoading] = useState(true);
   const [broadcastMsg, setBroadcastMsg] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedDay, setSelectedDay] = useState('ALL'); // ALL, 0=Dom, 5=Vie, 6=Sab...
+
+  const WEEKDAYS = [
+    { v: 'ALL', l: 'Todos los días' },
+    { v: '5',   l: 'Viernes' },
+    { v: '6',   l: 'Sábados' },
+    { v: '0',   l: 'Domingos' },
+    { v: '1',   l: 'Lunes' },
+    { v: '2',   l: 'Martes' },
+    { v: '3',   l: 'Miércoles' },
+    { v: '4',   l: 'Jueves' },
+  ];
 
   useEffect(() => {
     fetchCustomers();
-  }, [businessId]);
+  }, [businessId, selectedDay]);
 
   const fetchCustomers = async () => {
     setLoading(true);
-    const { data } = await supabase
-      .from('customers')
-      .select('*')
-      .eq('business_id', businessId)
-      .order('total_orders', { ascending: false });
+    let query = supabase.from('customers').select('*').eq('business_id', businessId);
+    
+    // Day filtering logic
+    if (selectedDay !== 'ALL') {
+      const { data: phones } = await supabase.rpc('get_customers_by_weekday', { 
+        p_business_id: businessId, 
+        p_dow: parseInt(selectedDay) 
+      });
+      if (phones) {
+        query = query.in('phone', phones.map(p => p.phone));
+      }
+    }
+
+    const { data } = await query.order('total_orders', { ascending: false });
     if (data) setCustomers(data);
     setLoading(false);
   };
+
 
   const filtered = customers.filter(c => {
     const s = searchTerm.toLowerCase();
@@ -252,6 +274,16 @@ function CustomersPanel({ businessId, businessName }) {
         <span style={{ fontSize: '12px', color: '#555', fontWeight: '700', background: '#111', padding: '4px 10px', borderRadius: '20px' }}>
           {customers.length} registrados
         </span>
+      </div>
+
+      {/* Weekday Filter */}
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', overflowX: 'auto', paddingBottom: '8px' }}>
+        {WEEKDAYS.map(day => (
+          <button key={day.v} onClick={() => setSelectedDay(day.v)}
+            style={{ whiteSpace: 'nowrap', padding: '6px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: '800', border: '1px solid', background: selectedDay === day.v ? '#FF4500' : '#111', borderColor: selectedDay === day.v ? '#FF4500' : '#222', color: selectedDay === day.v ? 'white' : '#555', cursor: 'pointer' }}>
+            {day.l}
+          </button>
+        ))}
       </div>
 
       {/* Filters */}
@@ -307,8 +339,9 @@ function CustomersPanel({ businessId, businessName }) {
                       <span style={{ fontSize: '11px', color: '#444' }}>Último: {lastDate}</span>
                     </div>
                     {c.last_items && (
-                      <div style={{ fontSize: '12px', color: '#888', fontStyle: 'italic', background: '#151515', padding: '4px 8px', borderRadius: '6px', marginTop: '2px' }}>
-                        🥡 {c.last_items}
+                      <div style={{ fontSize: '12px', color: '#888', fontStyle: 'italic', background: '#151515', padding: '6px 10px', borderRadius: '8px', marginTop: '4px', borderLeft: '3px solid #222' }}>
+                        <p style={{ margin: '0 0 4px 0', fontSize: '10px', fontWeight: '900', color: '#333', textTransform: 'uppercase' }}>📜 Últimos consumos:</p>
+                        {c.last_items}
                       </div>
                     )}
                   </div>
