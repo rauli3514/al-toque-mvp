@@ -3,12 +3,15 @@ import LiveOrders from './LiveOrders';
 import AdminProducts from './AdminProducts';
 import AdminDashboard from './AdminDashboard';
 import { supabase } from './supabaseClient';
+import { getLoyaltyTier, openWhatsAppLoyalty } from './customerRetention';
+import { useEffect } from 'react';
 
 const TABS = [
-  { key: 'live',     label: 'Pedidos',       icon: '⚡', color: '#FF4500' },
-  { key: 'menu',     label: 'Menú',          icon: '📋', color: '#0ea5e9' },
-  { key: 'reports',  label: 'Reportes',      icon: '📊', color: '#22c55e' },
-  { key: 'settings', label: 'Config',        icon: '⚙️', color: '#888'    },
+  { key: 'live',      label: 'Pedidos',    icon: '⚡', color: '#FF4500' },
+  { key: 'menu',      label: 'Menú',       icon: '📋', color: '#0ea5e9' },
+  { key: 'reports',   label: 'Reportes',   icon: '📊', color: '#22c55e' },
+  { key: 'customers', label: 'Clientes',   icon: '👥', color: '#a855f7' },
+  { key: 'settings',  label: 'Config',     icon: '⚙️', color: '#888'    },
 ];
 
 export default function BusinessHome({ business, onBack }) {
@@ -41,6 +44,12 @@ export default function BusinessHome({ business, onBack }) {
 
         {/* Quick links for non-admin staff */}
         <div style={{ display: 'flex', gap: '6px' }}>
+          {business.business_type !== 'SHOP' && (
+            <a href={`/?business_id=${business.id}&view=display`} target="_blank"
+              style={{ padding: '6px 12px', background: '#17a2b822', color: '#17a2b8', borderRadius: '8px', textDecoration: 'none', fontSize: '12px', fontWeight: '700', border: '1px solid #17a2b844' }}>
+              📺 Pantalla
+            </a>
+          )}
           <a href={`/?business_id=${business.id}`} target="_blank"
             style={{ padding: '6px 12px', background: '#1a1a1a', color: '#555', borderRadius: '8px', textDecoration: 'none', fontSize: '12px', fontWeight: '700', border: '1px solid #222' }}>
             📱 QR
@@ -50,10 +59,11 @@ export default function BusinessHome({ business, onBack }) {
 
       {/* ── CONTENT ── */}
       <div style={{ flex: 1, overflow: 'auto', paddingBottom: '72px' }}>
-        {tab === 'live'     && <LiveOrders businessId={business.id} business={business} />}
-        {tab === 'menu'     && <AdminProducts businessId={business.id} business={business} />}
-        {tab === 'reports'  && <AdminDashboard businessId={business.id} />}
-        {tab === 'settings' && <BusinessSettings business={business} />}
+      {tab === 'live'      && <LiveOrders businessId={business.id} business={business} />}
+      {tab === 'menu'      && <AdminProducts businessId={business.id} business={business} />}
+      {tab === 'reports'   && <AdminDashboard businessId={business.id} />}
+      {tab === 'customers' && <CustomersPanel businessId={business.id} businessName={business.name} />}
+      {tab === 'settings'  && <BusinessSettings business={business} />}
       </div>
 
       {/* ── BOTTOM TABS ── */}
@@ -175,10 +185,11 @@ function BusinessSettings({ business }) {
         <p style={{ fontSize: '11px', color: '#555', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px', margin: '0 0 10px 0' }}>Vistas operacionales (para tablets/displays)</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           {[
-            { label: '📱 Menú cliente (QR)', url: `/?business_id=${business.id}` },
-            { label: '💵 Caja', url: `/?business_id=${business.id}&view=cashier` },
-            { label: '🔥 Cocina', url: `/?business_id=${business.id}&view=kitchen` },
-            { label: '🍺 Barra', url: `/?business_id=${business.id}&view=bar` },
+            { label: '📱 Menú cliente (QR)',    url: `/?business_id=${business.id}` },
+            { label: '📺 Pantalla clientes',     url: `/?business_id=${business.id}&view=display` },
+            { label: '💵 Caja',                  url: `/?business_id=${business.id}&view=cashier` },
+            { label: '🔥 Cocina',                url: `/?business_id=${business.id}&view=kitchen` },
+            { label: '🍺 Barra',                 url: `/?business_id=${business.id}&view=bar` },
           ].map(link => (
             <a key={link.url} href={link.url} target="_blank"
               style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: '#151515', borderRadius: '8px', textDecoration: 'none', color: '#888', fontSize: '13px', border: '1px solid #1e1e1e' }}>
@@ -193,6 +204,107 @@ function BusinessSettings({ business }) {
         style={{ width: '100%', padding: '16px', background: saved ? '#22c55e' : '#FF4500', color: 'white', border: 'none', borderRadius: '12px', fontSize: '16px', fontWeight: '900', cursor: 'pointer', transition: 'all 0.3s' }}>
         {saving ? 'Guardando...' : saved ? '✅ Guardado' : 'Guardar cambios'}
       </button>
+    </div>
+  );
+}
+
+// ── Customers Loyalty Panel ──────────────────────────────────────────────────
+function CustomersPanel({ businessId, businessName }) {
+  const [customers, setCustomers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [broadcastMsg, setBroadcastMsg] = useState('');
+
+  useEffect(() => {
+    fetchCustomers();
+  }, [businessId]);
+
+  const fetchCustomers = async () => {
+    setLoading(true);
+    const { data } = await supabase
+      .from('customers')
+      .select('*')
+      .eq('business_id', businessId)
+      .order('total_orders', { ascending: false });
+    if (data) setCustomers(data);
+    setLoading(false);
+  };
+
+  const handleSalute = (c) => {
+    const clean = c.phone.replace(/\D/g, '');
+    const defaultMsg = `¡Hola ${c.name || ''}! Te saludamos de *${businessName}* 🍺`;
+    const finalMsg = broadcastMsg.trim() ? broadcastMsg : defaultMsg;
+    const url = `https://wa.me/${clean}?text=${encodeURIComponent(finalMsg)}`;
+    window.open(url, '_blank');
+  };
+
+  return (
+    <div style={{ padding: '20px 16px', maxWidth: '600px', margin: '0 auto' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+        <h2 style={{ margin: 0, fontSize: '20px', fontWeight: '900' }}>👥 Mis Clientes</h2>
+        <span style={{ fontSize: '12px', color: '#555', fontWeight: '700', background: '#111', padding: '4px 10px', borderRadius: '20px' }}>
+          {customers.length} registrados
+        </span>
+      </div>
+
+      {/* Broadcast Message Box */}
+      <div style={{ background: '#111', border: '1px solid #1a1a1a', borderRadius: '16px', padding: '16px', marginBottom: '24px' }}>
+        <p style={{ margin: '0 0 8px 0', fontSize: '11px', fontWeight: '900', color: '#444', textTransform: 'uppercase', letterSpacing: '1px' }}>💬 Mensaje Masivo / Oferta</p>
+        <textarea 
+          placeholder="Escribe algo aquí (ej: ¡Hoy 2x1 en pintas!) y presiona 'Saludar' en cada cliente para enviarlo."
+          value={broadcastMsg}
+          onChange={e => setBroadcastMsg(e.target.value)}
+          style={{ width: '100%', minHeight: '80px', background: '#080808', border: '1px solid #222', borderRadius: '10px', color: 'white', padding: '12px', fontSize: '14px', outline: 'none', resize: 'none', boxSizing: 'border-box' }}
+        />
+        <p style={{ margin: '8px 0 0 0', fontSize: '11px', color: '#333' }}>
+          {broadcastMsg.length > 0 ? '⚠️ El botón "Saludar" enviará este mensaje personalizado.' : '💡 Si dejas esto vacío, se enviará un saludo por defecto.'}
+        </p>
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: '40px', color: '#333' }}>Cargando clientes...</div>
+      ) : customers.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '60px 20px', background: '#0c0c0c', borderRadius: '20px', border: '1px dashed #222' }}>
+          <p style={{ fontSize: '40px', margin: '0 0 10px 0' }}>🤫</p>
+          <p style={{ margin: 0, color: '#444', fontWeight: '700' }}>Aún no tienes clientes registrados.</p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {customers.map(c => {
+            const lastDate = c.last_order_at ? new Date(c.last_order_at).toLocaleDateString('es-AR') : '—';
+            return (
+              <div key={c.id} style={{ background: '#0e0e0e', border: '1px solid #1a1a1a', borderRadius: '16px', padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '2px' }}>
+                    <span style={{ fontWeight: '900', fontSize: '16px', color: 'white' }}>{c.name || 'Cliente'}</span>
+                    <span style={{ fontSize: '11px', color: '#333' }}>{c.phone}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                    <span style={{ fontSize: '12px', color: '#22c55e', fontWeight: '800' }}>
+                       🔥 {c.total_orders} pedido{c.total_orders !== 1 ? 's' : ''}
+                    </span>
+                    <span style={{ fontSize: '11px', color: '#444' }}>Último: {lastDate}</span>
+                  </div>
+                </div>
+                
+                <button 
+                  onClick={() => handleSalute(c)}
+                  style={{ background: broadcastMsg.trim() ? '#a855f722' : '#25d36622', color: broadcastMsg.trim() ? '#a855f7' : '#25d366', border: `1px solid ${broadcastMsg.trim() ? '#a855f744' : '#25d36644'}`, padding: '10px 16px', borderRadius: '12px', fontSize: '13px', fontWeight: '900', cursor: 'pointer', transition: 'all 0.2s' }}
+                >
+                  📲 Saludar
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={{ marginTop: '30px', padding: '16px', background: '#111', borderRadius: '16px', border: '1px solid #1a1a1a' }}>
+        <p style={{ margin: '0 0 8px 0', fontSize: '11px', fontWeight: '900', color: '#444', textTransform: 'uppercase', letterSpacing: '1px' }}>¿Cómo funciona?</p>
+        <p style={{ margin: 0, fontSize: '13px', color: '#666', lineHeight: '1.5' }}>
+          Tus clientes se registran automáticamente cuando capturas su WhatsApp en el panel de <b>Pedidos</b> al confirmar un pago. 
+          Aquí puedes ver su historial de visitas y contactarlos rápidamente con ofertas personalizadas.
+        </p>
+      </div>
     </div>
   );
 }

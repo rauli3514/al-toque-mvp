@@ -17,11 +17,12 @@ import MenuImport from './MenuImport';
 
 // ── Slug helper ──────────────────────────────────────────────────────────────
 function generateSlug(name, id = '') {
-  const base = name.toLowerCase()
+  const safeName = (name || 'negocio').toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove accents
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
-  return id ? `${base}-${id.slice(0, 4)}` : base;
+  const prefix = id ? `-${id.slice(0, 4)}` : '';
+  return safeName + prefix;
 }
 
 // ── App ──────────────────────────────────────────────────────────────────────
@@ -197,15 +198,18 @@ function Section({ title, color, children }) {
 }
 
 function AdminBusinessCard({ b, onDelete }) {
+  if (!b) return null;
   const isShop  = b.business_type === 'SHOP';
+  const name    = b.name || 'Sin nombre';
   const accent  = isShop ? '#6366f1' : '#FF4500';
-  const panelUrl = b.slug ? `/b/${b.slug}` : `/?business_id=${b.id}&view=panel`;
+  const slug    = b.slug || generateSlug(name, b.id);
+  const panelUrl = `/b/${slug}`;
 
   return (
     <div style={{ background:'#0f0f0f', border:`1px solid ${accent}22`, borderRadius:'14px', padding:'16px 18px' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'12px' }}>
         <div>
-          <div style={{ fontSize:'17px', fontWeight:'900', color:'white', marginBottom:'4px' }}>{b.name}</div>
+          <div style={{ fontSize:'17px', fontWeight:'900', color:'white', marginBottom:'4px' }}>{name}</div>
           <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', alignItems:'center' }}>
             <span style={{ fontSize:'10px', background:`${accent}22`, color:accent, padding:'2px 7px', borderRadius:'4px', fontWeight:'800' }}>
               {isShop ? 'SHOP' : 'BAR'}
@@ -213,12 +217,10 @@ function AdminBusinessCard({ b, onDelete }) {
             {b.whatsapp_number && (
               <span style={{ fontSize:'10px', background:'#25d36622', color:'#25d366', padding:'2px 7px', borderRadius:'4px', fontWeight:'700' }}>📲 WA</span>
             )}
-            {b.slug && (
-              <span style={{ fontSize:'10px', color:'#333', fontFamily:'monospace' }}>/b/{b.slug}</span>
-            )}
+            <span style={{ fontSize:'10px', color:'#333', fontFamily:'monospace' }}>/b/{slug}</span>
           </div>
         </div>
-        <button onClick={() => onDelete(b.id, b.name)}
+        <button onClick={() => onDelete(b.id, name)}
           style={{ background:'transparent', border:'none', color:'#333', fontSize:'14px', cursor:'pointer', padding:'4px 8px', borderRadius:'6px' }}>
           🗑️
         </button>

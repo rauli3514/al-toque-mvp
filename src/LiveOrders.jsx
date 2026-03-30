@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
 import { printOrder } from './printOrder';
+import { getLoyaltyTier, openWhatsAppLoyalty, fetchCustomer, upsertCustomer } from './customerRetention';
 
 // All active statuses this view tracks
 const IN_SCOPE = ['PENDING_PAYMENT', 'PENDING_PAYMENT_CASH', 'PAID', 'IN_PREPARATION', 'READY'];
@@ -83,10 +84,14 @@ async function spawnDemoOrder(businessId) {
 
 export default function LiveOrders({ businessId, business }) {
   const [orders, setOrders]       = useState([]);
-  const [filter, setFilter]       = useState('ALL'); // ALL | status
+  const [filter, setFilter]       = useState('ALL');
   const [tick, setTick]           = useState(0);
   const [demoMode, setDemoMode]   = useState(false);
-  const [advancing, setAdvancing] = useState({}); // {orderId: true} while updating
+  const [advancing, setAdvancing] = useState({});
+  // Phone capture modal: { orderId, currentPhone }
+  const [captureModal, setCaptureModal] = useState(null);
+  // Loyalty toast: { phone, name, totalOrders }
+  const [loyaltyToast, setLoyaltyToast] = useState(null);
   const demoRef = useRef(null);
 
   // ── Data fetching ──────────────────────────────────────────────────────────
@@ -128,7 +133,8 @@ export default function LiveOrders({ businessId, business }) {
       .select('*, order_items(id, quantity, notes, products(name), order_item_modifiers(modifier_name))')
       .eq('id', id).single();
     if (!data) return;
-    if (!IN_SCOPE.includes(data.status)) {
+    const status = data.status;
+    if (!status || !IN_SCOPE.includes(status)) {
       setOrders(prev => prev.filter(o => o.id !== id));
       return;
     }
@@ -144,13 +150,57 @@ export default function LiveOrders({ businessId, business }) {
   const advance = async (order) => {
     const cfg = S[order.status];
     if (!cfg) return;
+
+    // If advancing to PAID and no phone → offer to capture
+    if (cfg.next === 'PAID' && !order.customer_phone) {
+      setCaptureModal({ orderId: order.id, currentPhone: '' });
+      return;
+    }
+
+    await doAdvance(order);
+  };
+
+  const doAdvance = async (order, overrides = {}) => {
+    const cfg = S[order.status];
+    if (!cfg) return;
     setAdvancing(prev => ({ ...prev, [order.id]: true }));
+
+    // Save overrides (phone/name) to order first
+    if (overrides.customer_phone || overrides.customer_name) {
+      await supabase.from('orders').update(overrides).eq('id', order.id);
+    }
+
     await supabase.from('orders').update({ status: cfg.next }).eq('id', order.id);
     setAdvancing(prev => { const n = { ...prev }; delete n[order.id]; return n; });
 
-    // Auto-print on PAID if configured
-    if (cfg.next === 'PAID' && ['PRINT', 'BOTH'].includes(business?.order_output_mode)) {
-      printOrder(supabase, order.id, business?.name, business?.paper_width || 80);
+    // Post-PAID: notify customer!
+    if (cfg.next === 'PAID') {
+      const phone = overrides.customer_phone || order.customer_phone;
+      if (phone) {
+        const customer = await fetchCustomer(supabase, { businessId: order.business_id, phone });
+        setLoyaltyToast({ 
+          phone, 
+          name: overrides.customer_name || order.customer_name, 
+          totalOrders: (customer?.total_orders || 0) + 1,
+          type: 'PAID'
+        });
+        setTimeout(() => setLoyaltyToast(null), 10000);
+      }
+    }
+
+    // Post-READY: notify customer!
+    if (cfg.next === 'READY') {
+      const phone = order.customer_phone;
+      if (phone) {
+        const customer = await fetchCustomer(supabase, { businessId: order.business_id, phone });
+        setLoyaltyToast({
+          phone,
+          name: order.customer_name,
+          totalOrders: customer?.total_orders || 1,
+          type: 'READY'
+        });
+        setTimeout(() => setLoyaltyToast(null), 15000);
+      }
     }
   };
 
@@ -179,8 +229,20 @@ export default function LiveOrders({ businessId, business }) {
   }, [demoMode, businessId]);
 
   // ── Filtered & sorted orders ───────────────────────────────────────────────
-  const visible = orders.filter(o => filter === 'ALL' || o.status === filter);
-  const countOf = (s) => orders.filter(o => o.status === s || (s === 'PENDING_PAYMENT' && o.status === 'PENDING_PAYMENT_CASH')).length;
+  const visible = orders.filter(o => {
+    if (filter === 'ALL') return true;
+    if (filter === 'PENDING_PAYMENT') {
+      return o.status === 'PENDING_PAYMENT' || o.status === 'PENDING_PAYMENT_CASH';
+    }
+    return o.status === filter;
+  });
+
+  const countOf = (s) => orders.filter(o => {
+    if (s === 'PENDING_PAYMENT') {
+      return o.status === 'PENDING_PAYMENT' || o.status === 'PENDING_PAYMENT_CASH';
+    }
+    return o.status === s;
+  }).length;
 
   // ── Render ─────────────────────────────────────────────────────────────────
   const FILTERS = [
@@ -380,6 +442,91 @@ export default function LiveOrders({ businessId, business }) {
           );
         })}
       </div>
+      {/* ── PHONE CAPTURE MODAL ── */}
+      {captureModal && (() => {
+        const order = orders.find(o => o.id === captureModal.orderId);
+        if (!order) return null;
+        return (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 3000, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+            <div style={{ background: '#111', borderRadius: '24px 24px 0 0', padding: '28px 20px 40px', width: '100%', maxWidth: '480px', animation: 'slideUp 0.3s ease' }}>
+              <p style={{ margin: '0 0 6px 0', fontSize: '20px', fontWeight: '900', color: 'white' }}>💳 Confirmar pago #{order.display_number}</p>
+              <p style={{ margin: '0 0 20px 0', fontSize: '13px', color: '#555' }}>¿El cliente dejó su WhatsApp? (opcional — suma puntos de fidelidad)</p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px' }}>
+                <input type="text" placeholder="Nombre del cliente"
+                  value={captureModal.name || ''}
+                  onChange={e => setCaptureModal(prev => ({ ...prev, name: e.target.value }))}
+                  style={{ padding: '12px 14px', background: '#1a1a1a', border: '1px solid #222', borderRadius: '10px', color: 'white', fontSize: '15px', outline: 'none' }}
+                />
+                <input type="tel" placeholder="WhatsApp (ej: 3624123456)"
+                  value={captureModal.currentPhone}
+                  onChange={e => setCaptureModal(prev => ({ ...prev, currentPhone: e.target.value }))}
+                  style={{ padding: '12px 14px', background: '#1a1a1a', border: '1px solid #222', borderRadius: '10px', color: 'white', fontSize: '15px', outline: 'none' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button onClick={() => {
+                  const o = orders.find(x => x.id === captureModal.orderId);
+                  setCaptureModal(null);
+                  if (o) doAdvance(o);
+                }}
+                  style={{ flex: 1, padding: '14px', background: '#1a1a1a', color: '#666', border: '1px solid #222', borderRadius: '12px', fontSize: '14px', fontWeight: '700', cursor: 'pointer' }}>
+                  Saltar
+                </button>
+                <button onClick={() => {
+                  const o = orders.find(x => x.id === captureModal.orderId);
+                  const overrides = {};
+                  if (captureModal.currentPhone?.trim()) overrides.customer_phone = captureModal.currentPhone.replace(/\D/g, '');
+                  if (captureModal.name?.trim()) overrides.customer_name = captureModal.name.trim();
+                  setCaptureModal(null);
+                  if (o) doAdvance(o, overrides);
+                }}
+                  style={{ flex: 2, padding: '14px', background: '#f59e0b', color: 'black', border: 'none', borderRadius: '12px', fontSize: '15px', fontWeight: '900', cursor: 'pointer' }}>
+                  ✅ Confirmar pago
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── LOYALTY TOAST ── */}
+      {loyaltyToast && loyaltyToast.phone && (() => {
+        const isReady = loyaltyToast.type === 'READY';
+        return (
+          <div style={{ position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)', zIndex: 4000, background: isReady ? '#001a2c' : '#0f1f0f', border: `1px solid ${isReady ? '#003a5c' : '#1a3a1a'}`, borderRadius: '16px', padding: '16px 18px', maxWidth: '340px', width: 'calc(100% - 32px)', boxShadow: '0 8px 30px rgba(0,0,0,0.5)', animation: 'slideUp 0.3s ease' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px' }}>
+              <div>
+                <p style={{ margin: '0 0 3px 0', fontSize: '14px', fontWeight: '900', color: isReady ? '#38bdf8' : '#4ade80' }}>
+                  {isReady ? '🔔 ¡Pedido listo!' : '✅ Pago confirmado'}
+                </p>
+                <p style={{ margin: 0, fontSize: '12px', color: isReady ? '#7dd3fc' : '#2a6a2a' }}>
+                  {loyaltyToast.name || 'Cliente'} — {loyaltyToast.totalOrders}º pedido
+                </p>
+              </div>
+              <button onClick={() => setLoyaltyToast(null)}
+                style={{ background: 'transparent', border: 'none', color: '#222', fontSize: '16px', cursor: 'pointer', padding: '0 0 0 10px' }}>✕</button>
+            </div>
+            
+            <button onClick={() => {
+              const msg = isReady 
+                ? `¡Hola ${loyaltyToast.name || ''}! Tu pedido ya está listo para retirar en *${business?.name}* 🍺`
+                : openWhatsAppLoyalty({ phone: loyaltyToast.phone, businessName: business?.name || 'AlToque', customerName: loyaltyToast.name, totalOrders: loyaltyToast.totalOrders });
+              
+              if (isReady) {
+                const url = `https://wa.me/${loyaltyToast.phone}?text=${encodeURIComponent(msg)}`;
+                window.open(url, '_blank');
+              }
+            }}
+              style={{ width: '100%', padding: '11px', background: '#25d366', color: 'white', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: '900', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+              <span>📲</span> {isReady ? 'Avisar por WhatsApp' : 'Enviar mensaje de puntos'}
+            </button>
+          </div>
+        );
+      })()}
+
+      <style>{`@keyframes slideUp { from { transform: translateY(30px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }`}</style>
     </div>
   );
 }

@@ -2,13 +2,15 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 
 export default function CustomerUI({ businessId }) {
-  const [view, setView] = useState('landing');
-  const [categories, setCategories] = useState([]);
-  const [products, setProducts] = useState([]);
-  const [cart, setCart] = useState([]);
-  const [order, setOrder] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [view, setView]               = useState('landing');
+  const [categories, setCategories]   = useState([]);
+  const [products, setProducts]       = useState([]);
+  const [cart, setCart]               = useState([]);
+  const [order, setOrder]             = useState(null);
+  const [loading, setLoading]         = useState(false);
   const [tableNumber, setTableNumber] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [customerName, setCustomerName]   = useState('');
 
   // Inline upsell
   const [inlineUpsell, setInlineUpsell] = useState(null);
@@ -159,7 +161,9 @@ export default function CustomerUI({ businessId }) {
       const { data: orderData, error: orderErr } = await supabase.from('orders').insert({
         business_id: businessId, status: 'CREATED', order_type: 'PICKUP',
         customer_notes: `[CLIENT_TOKEN:${clientToken}]`, payment_method: 'CASH', total: 0,
-        table_number: tableNumber ? parseInt(tableNumber) : null
+        table_number: tableNumber ? parseInt(tableNumber) : null,
+        customer_name:  customerName.trim() || null,
+        customer_phone: customerPhone.replace(/\D/g, '') || null,
       }).select().single();
       if (orderErr || !orderData) throw new Error('Error iniciando pedido.');
 
@@ -215,6 +219,28 @@ export default function CustomerUI({ businessId }) {
     return (
       <div style={{ padding: '20px', minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#121212', color: 'white' }}>
         <h2 style={{ color: 'white', marginBottom: '20px', borderBottom: '1px solid #333', paddingBottom: '20px' }}>Revisa tu Pedido</h2>
+
+        {/* OPTIONAL: WhatsApp capture */}
+        <div style={{ background: '#0f1f0f', border: '1px solid #1a3a1a', borderRadius: '12px', padding: '15px', marginBottom: '15px' }}>
+          <p style={{ margin: '0 0 4px 0', fontSize: '13px', color: '#4ade80', fontWeight: '700' }}>📲 ¿Querés que te avisemos cuando esté listo?</p>
+          <p style={{ margin: '0 0 12px 0', fontSize: '11px', color: '#2a4a2a' }}>Dejanos tu WhatsApp y te mandamos una notificación + beneficios de cliente frecuente</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <input
+              type="text"
+              placeholder="Tu nombre (opcional)"
+              value={customerName}
+              onChange={e => setCustomerName(e.target.value)}
+              style={{ padding: '10px 12px', background: '#111', border: '1px solid #1a2a1a', borderRadius: '8px', color: 'white', fontSize: '14px', outline: 'none' }}
+            />
+            <input
+              type="tel"
+              placeholder="WhatsApp (ej: 3624123456)"
+              value={customerPhone}
+              onChange={e => setCustomerPhone(e.target.value)}
+              style={{ padding: '10px 12px', background: '#111', border: '1px solid #1a2a1a', borderRadius: '8px', color: 'white', fontSize: '14px', outline: 'none' }}
+            />
+          </div>
+        </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: '#1e1e1e', padding: '15px', borderRadius: '12px', marginBottom: '15px', border: '1px solid #333' }}>
           <span style={{ fontSize: '20px' }}>🪑</span>
