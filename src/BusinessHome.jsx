@@ -233,23 +233,39 @@ function CustomersPanel({ businessId, businessName }) {
 
   const fetchCustomers = async () => {
     setLoading(true);
-    let query = supabase.from('customers').select('*').eq('business_id', businessId);
-    
-    // Day filtering logic
-    if (selectedDay !== 'ALL') {
-      const { data: phones } = await supabase.rpc('get_customers_by_weekday', { 
-        p_business_id: businessId, 
-        p_dow: parseInt(selectedDay) 
-      });
-      if (phones) {
-        query = query.in('phone', phones.map(p => p.phone));
-      }
-    }
+    try {
+      let query = supabase.from('customers').select('*').eq('business_id', businessId);
+      
+      if (selectedDay !== 'ALL') {
+        const { data: phones, error: rpcErr } = await supabase.rpc('get_customers_by_weekday', { 
+          p_business_id: businessId, 
+          p_dow: parseInt(selectedDay) 
+        });
+        
+        if (rpcErr) {
+          console.error("RPC Error:", rpcErr);
+          setCustomers([]); // Clear if filter fails
+          setLoading(false);
+          return;
+        }
 
-    const { data } = await query.order('total_orders', { ascending: false });
-    if (data) setCustomers(data);
+        if (phones && phones.length > 0) {
+          query = query.in('phone', phones.map(p => p.phone));
+        } else {
+          setCustomers([]);
+          setLoading(false);
+          return;
+        }
+      }
+
+      const { data } = await query.order('total_orders', { ascending: false });
+      if (data) setCustomers(data);
+    } catch (err) {
+      console.error("Fetch Err:", err);
+    }
     setLoading(false);
   };
+
 
 
   const filtered = customers.filter(c => {
