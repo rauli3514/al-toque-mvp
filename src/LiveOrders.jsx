@@ -175,11 +175,13 @@ export default function LiveOrders({ businessId, business }) {
 
     // Post-PAID: notify customer!
     if (cfg.next === 'PAID') {
-      const phone = overrides.customer_phone || order.customer_phone;
-      if (phone) {
-        const customer = await fetchCustomer(supabase, { businessId: order.business_id, phone });
+      const rawPhone = overrides.customer_phone || order.customer_phone;
+      if (rawPhone) {
+        const cleanPhone = normalizePhone(rawPhone);
+        const customer = await fetchCustomer(supabase, { businessId: order.business_id, phone: cleanPhone });
+        
         setLoyaltyToast({ 
-          phone, 
+          phone: cleanPhone, 
           name: overrides.customer_name || order.customer_name, 
           totalOrders: (customer?.total_orders || 0) + 1,
           type: 'PAID'
@@ -193,8 +195,9 @@ export default function LiveOrders({ businessId, business }) {
       const phone = order.customer_phone;
       if (phone) {
         const customer = await fetchCustomer(supabase, { businessId: order.business_id, phone });
+        const cleanPhone = normalizePhone(phone);
         setLoyaltyToast({
-          phone,
+          phone: cleanPhone,
           name: order.customer_name,
           totalOrders: customer?.total_orders || 1,
           type: 'READY'
