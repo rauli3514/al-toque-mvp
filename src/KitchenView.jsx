@@ -5,8 +5,9 @@ const IN_SCOPE = ['PAID', 'IN_PREPARATION'];
 
 function elapsed(createdAt) {
   const diff = Math.floor((Date.now() - new Date(createdAt)) / 1000);
-  if (diff < 60) return `${diff}s`;
-  return `${Math.floor(diff / 60)}m`;
+  if (diff < 60) return 'hace un momento';
+  const mins = Math.floor(diff / 60);
+  return `hace ${mins} min`;
 }
 
 function isUrgent(createdAt, status) {
@@ -33,7 +34,7 @@ export default function KitchenView({ businessId }) {
       }).subscribe();
 
     // Timer to refresh elapsed times every 30s
-    const timer = setInterval(() => setTick(t => t + 1), 30000);
+    const timer = setInterval(() => setTick(t => t + 1), 60000); // update every minute
     return () => { supabase.removeChannel(channel); clearInterval(timer); };
   }, [businessId]);
 

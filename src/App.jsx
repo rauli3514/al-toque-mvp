@@ -1,5 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
+
+// Business panel
+import BusinessHome from './BusinessHome';
+import ShopUI from './ShopUI';
+
+// Staff / operational views (legacy direct URL access)
 import CustomerUI from './CustomerUI';
 import AdminDashboard from './AdminDashboard';
 import AdminProducts from './AdminProducts';
@@ -8,170 +14,238 @@ import BarView from './BarView';
 import CashierView from './CashierView';
 import PublicDisplay from './PublicDisplay';
 import MenuImport from './MenuImport';
-import ShopUI from './ShopUI';
 
-function App() {
+// ── Slug helper ──────────────────────────────────────────────────────────────
+function generateSlug(name, id = '') {
+  const base = name.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove accents
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+  return id ? `${base}-${id.slice(0, 4)}` : base;
+}
+
+// ── App ──────────────────────────────────────────────────────────────────────
+export default function App() {
   const queryParams = new URLSearchParams(window.location.search);
-  const businessId = queryParams.get('business_id');
-  const view = queryParams.get('view') || 'customer';
+  const urlBusinessId = queryParams.get('business_id');
+  const view          = queryParams.get('view') || 'customer';
 
-  const [business, setBusiness] = useState(null);
+  // Detect slug route: /b/:slug
+  const slugMatch = window.location.pathname.match(/^\/b\/([^/?]+)/);
+  const urlSlug   = slugMatch ? slugMatch[1] : null;
+
+  const [business, setBusiness]           = useState(null);
   const [businessesList, setBusinessesList] = useState([]);
-  const [loadingBusiness, setLoadingBusiness] = useState(!!businessId);
+  const [loading, setLoading]             = useState(!!(urlBusinessId || urlSlug));
 
   useEffect(() => {
-    if (businessId) {
-      supabase.from('businesses').select('*').eq('id', businessId).single()
-        .then(({ data }) => { if (data) setBusiness(data); setLoadingBusiness(false); });
+    if (urlSlug) {
+      // Load by slug (Business Panel route)
+      supabase.from('businesses').select('*').eq('slug', urlSlug).single()
+        .then(({ data }) => { if (data) setBusiness(data); setLoading(false); });
+    } else if (urlBusinessId) {
+      // Load by UUID (legacy / staff route)
+      supabase.from('businesses').select('*').eq('id', urlBusinessId).single()
+        .then(({ data }) => { if (data) setBusiness(data); setLoading(false); });
     } else {
+      // Platform admin: load all businesses
       supabase.from('businesses').select('*').order('created_at', { ascending: false })
-        .then(({ data }) => { if (data) setBusinessesList(data); });
+        .then(({ data }) => { if (data) setBusinessesList(data); setLoading(false); });
     }
-  }, [businessId]);
+  }, [urlBusinessId, urlSlug]);
 
-  const createBusiness = async (type) => {
-    const emoji = type === 'SHOP' ? '🛍️' : '🍺';
-    const label = type === 'SHOP' ? 'Tienda Demo AlToque' : 'Bar Demo AlToque';
+  // ── Loading ────────────────────────────────────────────────────────────────
+  if (loading) return (
+    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh', background:'#080808', color:'#444', fontSize:'16px', fontFamily:"'Inter', sans-serif" }}>
+      <span>⚡ Cargando...</span>
+    </div>
+  );
+
+  // ── SLUG ROUTE → Business Panel ────────────────────────────────────────────
+  if (urlSlug) {
+    if (!business) return (
+      <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100vh', background:'#080808', color:'#555', fontFamily:"'Inter', sans-serif", gap:'12px' }}>
+        <div style={{ fontSize:'48px' }}>🔍</div>
+        <p style={{ fontSize:'18px', fontWeight:'700' }}>Negocio no encontrado</p>
+        <p style={{ fontSize:'13px', color:'#333' }}>Verificá el enlace</p>
+        <a href="/" style={{ marginTop:'8px', padding:'10px 20px', background:'#1a1a1a', color:'#888', borderRadius:'10px', textDecoration:'none', fontSize:'13px', fontWeight:'700' }}>Ir al inicio</a>
+      </div>
+    );
+    if (business.business_type === 'SHOP') return <ShopUI businessId={business.id} business={business} />;
+    return <BusinessHome business={business} />;
+  }
+
+  // ── LEGACY ROUTES (?business_id=UUID&view=xxx) ─────────────────────────────
+  if (urlBusinessId) {
+    const isShop = business?.business_type === 'SHOP';
+
+    if (view === 'import')   return <MenuImport     businessId={urlBusinessId} />;
+    if (view === 'admin')    return <AdminDashboard businessId={urlBusinessId} />;
+    if (view === 'products') return <AdminProducts  businessId={urlBusinessId} business={business} />;
+    if (view === 'panel')    return business ? <BusinessHome business={business} /> : null;
+
+    if (!isShop && view === 'display') return <PublicDisplay businessId={urlBusinessId} />;
+    if (!isShop && view === 'kitchen') return <KitchenView   businessId={urlBusinessId} />;
+    if (!isShop && view === 'bar')     return <BarView       businessId={urlBusinessId} />;
+    if (!isShop && view === 'cashier') return <CashierView   businessId={urlBusinessId} />;
+
+    if (isShop) return <ShopUI businessId={urlBusinessId} business={business} />;
+    return <CustomerUI businessId={urlBusinessId} />;
+  }
+
+  // ── PLATFORM ADMIN (no business_id) ───────────────────────────────────────
+  const createBusiness = async ({ name, type }) => {
     const { data, error } = await supabase.from('businesses')
-      .insert({ name: `${emoji} ${label}`, business_type: type })
+      .insert({ name, business_type: type, slug: generateSlug(name) })
       .select().single();
-    if (error) return alert("Error conectando a Supabase. ¿Ya corriste el SQL de migración?");
-    if (data) window.location.href = `/?business_id=${data.id}&view=products`;
+    if (error) {
+      // Slug conflict: add random suffix
+      const { data: data2, error: e2 } = await supabase.from('businesses')
+        .insert({ name, business_type: type, slug: generateSlug(name, Date.now().toString()) })
+        .select().single();
+      if (e2) return alert('Error al crear negocio: ' + e2.message);
+      if (data2) return window.location.href = `/b/${data2.slug}`;
+    }
+    if (data) window.location.href = `/b/${data.slug}`;
   };
 
   const deleteBusiness = async (id, name) => {
-    if (window.confirm(`¿Seguro que deseas ELIMINAR "${name}"?\n\nEsto borrará permanentemente sus productos, órdenes y categorías.`)) {
-      const { error } = await supabase.from('businesses').delete().eq('id', id);
-      if (error) alert("Error al eliminar: " + error.message);
-      else setBusinessesList(businessesList.filter(b => b.id !== id));
-    }
+    if (!window.confirm(`¿Eliminar "${name}"? Esto borrará todos sus datos.`)) return;
+    const { error } = await supabase.from('businesses').delete().eq('id', id);
+    if (error) alert('Error: ' + error.message);
+    else setBusinessesList(businessesList.filter(b => b.id !== id));
   };
 
-  // ─── ROUTES FOR KNOWN BUSINESS ────────────────────────────────────────────
-  if (businessId) {
-    if (loadingBusiness) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#121212', color: '#888', fontSize: '18px' }}>Cargando...</div>;
+  const bars  = businessesList.filter(b => b.business_type !== 'SHOP');
+  const shops = businessesList.filter(b => b.business_type === 'SHOP');
 
-    const isShop = business?.business_type === 'SHOP';
+  return <PlatformAdmin bars={bars} shops={shops} onCreate={createBusiness} onDelete={deleteBusiness} />;
+}
 
-    // Admin & operational views (available for all types)
-    if (view === 'import')   return <MenuImport     businessId={businessId} />;
-    if (view === 'admin')    return <AdminDashboard businessId={businessId} />;
-    if (view === 'products') return <AdminProducts  businessId={businessId} business={business} />;
+// ── Platform Admin UI ─────────────────────────────────────────────────────────
+function PlatformAdmin({ bars, shops, onCreate, onDelete }) {
+  const [newName, setNewName] = useState('');
+  const [newType, setNewType] = useState('BAR');
+  const [creating, setCreating] = useState(false);
 
-    // BAR-only views
-    if (!isShop && view === 'display') return <PublicDisplay businessId={businessId} />;
-    if (!isShop && view === 'kitchen') return <KitchenView   businessId={businessId} />;
-    if (!isShop && view === 'bar')     return <BarView       businessId={businessId} />;
-    if (!isShop && view === 'cashier') return <CashierView   businessId={businessId} />;
-
-    // Customer-facing: route by business type
-    if (isShop) return <ShopUI businessId={businessId} business={business} />;
-    return <CustomerUI businessId={businessId} />;
-  }
-
-  // ─── SUPER ADMIN LANDING ──────────────────────────────────────────────────
-  const barBusinesses  = businessesList.filter(b => b.business_type !== 'SHOP');
-  const shopBusinesses = businessesList.filter(b => b.business_type === 'SHOP');
+  const handleCreate = async () => {
+    if (!newName.trim()) return;
+    setCreating(true);
+    await onCreate({ name: newName.trim(), type: newType });
+    setCreating(false);
+    setNewName('');
+  };
 
   return (
-    <div style={{ padding: '30px 20px', minHeight: '100vh', background: '#0f0f0f', color: 'white', display: 'flex', flexDirection: 'column', alignItems: 'center', fontFamily: "'Inter', sans-serif" }}>
-      <h1 style={{ fontSize: '42px', fontWeight: '900', margin: '20px 0 4px 0', background: 'linear-gradient(90deg, #FF4500, #ff8c00)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>⚡ AlToque</h1>
-      <p style={{ fontSize: '16px', color: '#555', marginBottom: '40px' }}>Panel Super-Admin Multi-tenant</p>
+    <div style={{ padding:'30px 20px', minHeight:'100vh', background:'#080808', color:'white', display:'flex', flexDirection:'column', alignItems:'center', fontFamily:"'Inter', system-ui, sans-serif" }}>
+      <h1 style={{ fontSize:'36px', fontWeight:'900', margin:'20px 0 4px 0', background:'linear-gradient(90deg, #FF4500, #ff8c00)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>
+        ⚡ AlToque
+      </h1>
+      <p style={{ fontSize:'13px', color:'#333', marginBottom:'40px', fontWeight:'600' }}>Plataforma · Panel interno</p>
 
-      {/* CREATE NEW */}
-      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center', marginBottom: '50px', maxWidth: '700px', width: '100%' }}>
-        <button onClick={() => createBusiness('BAR')}
-          style={{ flex: 1, minWidth: '200px', padding: '18px', background: 'linear-gradient(135deg, #FF4500, #cc3700)', color: 'white', border: 'none', borderRadius: '14px', fontSize: '15px', fontWeight: '800', cursor: 'pointer', boxShadow: '0 5px 20px rgba(255,69,0,0.3)' }}>
-          🍺 Nuevo BAR / Restaurante
-        </button>
-        <button onClick={() => createBusiness('SHOP')}
-          style={{ flex: 1, minWidth: '200px', padding: '18px', background: 'linear-gradient(135deg, #6366f1, #4f46e5)', color: 'white', border: 'none', borderRadius: '14px', fontSize: '15px', fontWeight: '800', cursor: 'pointer', boxShadow: '0 5px 20px rgba(99,102,241,0.3)' }}>
-          🛍️ Nueva TIENDA / Catálogo
-        </button>
+      {/* ── CREATE BUSINESS ── */}
+      <div style={{ width:'100%', maxWidth:'600px', background:'#0f0f0f', border:'1px solid #1a1a1a', borderRadius:'16px', padding:'20px', marginBottom:'40px' }}>
+        <p style={{ fontSize:'11px', color:'#555', fontWeight:'800', textTransform:'uppercase', letterSpacing:'1px', margin:'0 0 14px 0' }}>Nuevo negocio</p>
+        <div style={{ display:'flex', gap:'10px', flexWrap:'wrap' }}>
+          <input
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleCreate()}
+            placeholder="Nombre del negocio..."
+            style={{ flex:1, minWidth:'180px', padding:'12px 14px', background:'#111', border:'1px solid #222', borderRadius:'10px', color:'white', fontSize:'14px', outline:'none' }}
+          />
+          <select value={newType} onChange={e => setNewType(e.target.value)}
+            style={{ padding:'12px 14px', background:'#111', border:'1px solid #222', borderRadius:'10px', color:'white', fontSize:'14px', cursor:'pointer' }}>
+            <option value="BAR">🍺 Bar / Restaurante</option>
+            <option value="SHOP">🛍️ Tienda / Catálogo</option>
+          </select>
+          <button onClick={handleCreate} disabled={creating || !newName.trim()}
+            style={{ padding:'12px 20px', background: newName.trim() ? '#FF4500' : '#1a1a1a', color: newName.trim() ? 'white' : '#333', border:'none', borderRadius:'10px', fontWeight:'900', fontSize:'14px', cursor: newName.trim() ? 'pointer' : 'default', transition:'all 0.2s' }}>
+            {creating ? '...' : '+ Crear'}
+          </button>
+        </div>
       </div>
 
-      {/* BAR LIST */}
-      {barBusinesses.length > 0 && (
-        <div style={{ width: '100%', maxWidth: '700px', marginBottom: '40px' }}>
-          <h3 style={{ color: '#FF4500', fontSize: '12px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '2px', margin: '0 0 16px 0' }}>🍺 Bares & Restaurantes</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            {barBusinesses.map(b => <BusinessCard key={b.id} b={b} type="BAR" onDelete={deleteBusiness} />)}
-          </div>
-        </div>
+      {/* ── BAR LIST ── */}
+      {bars.length > 0 && (
+        <Section title="🍺 Bares & Restaurantes" color="#FF4500">
+          {bars.map(b => <AdminBusinessCard key={b.id} b={b} onDelete={onDelete} />)}
+        </Section>
       )}
 
-      {/* SHOP LIST */}
-      {shopBusinesses.length > 0 && (
-        <div style={{ width: '100%', maxWidth: '700px', marginBottom: '40px' }}>
-          <h3 style={{ color: '#6366f1', fontSize: '12px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '2px', margin: '0 0 16px 0' }}>🛍️ Tiendas & Catálogos</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            {shopBusinesses.map(b => <BusinessCard key={b.id} b={b} type="SHOP" onDelete={deleteBusiness} />)}
-          </div>
-        </div>
+      {/* ── SHOP LIST ── */}
+      {shops.length > 0 && (
+        <Section title="🛍️ Tiendas & Catálogos" color="#6366f1">
+          {shops.map(b => <AdminBusinessCard key={b.id} b={b} onDelete={onDelete} />)}
+        </Section>
+      )}
+
+      {bars.length === 0 && shops.length === 0 && (
+        <p style={{ color:'#222', fontSize:'16px', fontWeight:'700', marginTop:'40px' }}>Sin negocios registrados. Creá el primero ↑</p>
       )}
     </div>
   );
 }
 
-function BusinessCard({ b, type, onDelete }) {
-  const isShop = type === 'SHOP';
-  const accent = isShop ? '#6366f1' : '#FF4500';
-
+function Section({ title, color, children }) {
   return (
-    <div style={{ background: '#1a1a1a', padding: '20px', borderRadius: '14px', border: `1px solid ${accent}22`, position: 'relative' }}>
-      <button onClick={() => onDelete(b.id, b.name)}
-        style={{ position: 'absolute', right: '16px', top: '16px', background: '#ff444422', color: '#ff6666', border: '1px solid #ff444433', borderRadius: '8px', padding: '5px 10px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}>
-        🗑️
-      </button>
-
-      <div style={{ marginBottom: '14px' }}>
-        <h2 style={{ margin: '0 0 2px 0', color: 'white', fontSize: '20px', paddingRight: '80px' }}>{b.name}</h2>
-        <span style={{ fontSize: '11px', background: `${accent}22`, color: accent, padding: '2px 8px', borderRadius: '4px', fontWeight: '700' }}>
-          {isShop ? '🛍️ TIENDA' : '🍺 BAR'}
-        </span>
-        <p style={{ fontSize: '10px', color: '#444', marginTop: '6px', fontFamily: 'monospace' }}>{b.id}</p>
-      </div>
-
-      {/* CLIENT */}
-      <p style={{ color: '#444', fontSize: '11px', fontWeight: '700', margin: '0 0 6px 0', textTransform: 'uppercase' }}>{isShop ? 'Catálogo' : 'Cliente'}</p>
-      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
-        <a href={`/?business_id=${b.id}`} style={linkStyle(accent)}>{isShop ? '🛍️ Ver Tienda' : '📱 Menú QR'}</a>
-        {!isShop && <a href={`/?business_id=${b.id}&view=display`} style={linkStyle('#9b59b6')}>📺 Pantalla</a>}
-        <a href={`/?business_id=${b.id}&view=import`}  style={linkStyle('#e67e22')}>⚡ Importar Menú</a>
-      </div>
-
-      {/* OPERATIONS — BAR ONLY */}
-      {!isShop && (
-        <>
-          <p style={{ color: '#444', fontSize: '11px', fontWeight: '700', margin: '0 0 6px 0', textTransform: 'uppercase' }}>Operación</p>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
-            <a href={`/?business_id=${b.id}&view=cashier`} style={linkStyle('#FF4500')}>💵 Caja</a>
-            <a href={`/?business_id=${b.id}&view=kitchen`} style={linkStyle('#b8860b')}>🔥 Cocina</a>
-            <a href={`/?business_id=${b.id}&view=bar`}     style={linkStyle('#17a2b8')}>🍺 Barra</a>
-          </div>
-        </>
-      )}
-
-      {/* ADMIN */}
-      <p style={{ color: '#444', fontSize: '11px', fontWeight: '700', margin: '0 0 6px 0', textTransform: 'uppercase' }}>Administración</p>
-      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-        {!isShop && <a href={`/?business_id=${b.id}&view=admin`}    style={linkStyle('#28a745')}>🧮 Dashboard</a>}
-        <a href={`/?business_id=${b.id}&view=products`} style={linkStyle('#28a745')}>✏️ Productos</a>
-      </div>
+    <div style={{ width:'100%', maxWidth:'600px', marginBottom:'40px' }}>
+      <p style={{ color, fontSize:'11px', fontWeight:'800', textTransform:'uppercase', letterSpacing:'2px', margin:'0 0 14px 0' }}>{title}</p>
+      <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>{children}</div>
     </div>
   );
 }
 
-const linkStyle = (color) => ({
-  background: `${color}15`,
-  padding: '8px 14px',
-  borderRadius: '8px',
-  color: color,
-  textDecoration: 'none',
-  fontSize: '13px',
-  fontWeight: '700',
-  border: `1px solid ${color}33`,
-  display: 'inline-block',
-});
+function AdminBusinessCard({ b, onDelete }) {
+  const isShop  = b.business_type === 'SHOP';
+  const accent  = isShop ? '#6366f1' : '#FF4500';
+  const panelUrl = b.slug ? `/b/${b.slug}` : `/?business_id=${b.id}&view=panel`;
 
-export default App;
+  return (
+    <div style={{ background:'#0f0f0f', border:`1px solid ${accent}22`, borderRadius:'14px', padding:'16px 18px' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'12px' }}>
+        <div>
+          <div style={{ fontSize:'17px', fontWeight:'900', color:'white', marginBottom:'4px' }}>{b.name}</div>
+          <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', alignItems:'center' }}>
+            <span style={{ fontSize:'10px', background:`${accent}22`, color:accent, padding:'2px 7px', borderRadius:'4px', fontWeight:'800' }}>
+              {isShop ? 'SHOP' : 'BAR'}
+            </span>
+            {b.whatsapp_number && (
+              <span style={{ fontSize:'10px', background:'#25d36622', color:'#25d366', padding:'2px 7px', borderRadius:'4px', fontWeight:'700' }}>📲 WA</span>
+            )}
+            {b.slug && (
+              <span style={{ fontSize:'10px', color:'#333', fontFamily:'monospace' }}>/b/{b.slug}</span>
+            )}
+          </div>
+        </div>
+        <button onClick={() => onDelete(b.id, b.name)}
+          style={{ background:'transparent', border:'none', color:'#333', fontSize:'14px', cursor:'pointer', padding:'4px 8px', borderRadius:'6px' }}>
+          🗑️
+        </button>
+      </div>
+
+      <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+        <a href={panelUrl}
+          style={{ padding:'8px 14px', background:`${accent}22`, color:accent, borderRadius:'8px', textDecoration:'none', fontSize:'13px', fontWeight:'800', border:`1px solid ${accent}33` }}>
+          {isShop ? '🛍️ Abrir tienda' : '⚡ Panel del negocio'}
+        </a>
+        <a href={`/?business_id=${b.id}`} target="_blank"
+          style={{ padding:'8px 14px', background:'#111', color:'#555', borderRadius:'8px', textDecoration:'none', fontSize:'13px', fontWeight:'700', border:'1px solid #1e1e1e' }}>
+          📱 Ver menú
+        </a>
+        {!isShop && (
+          <>
+            <a href={`/?business_id=${b.id}&view=cashier`} target="_blank"
+              style={{ padding:'8px 14px', background:'#111', color:'#555', borderRadius:'8px', textDecoration:'none', fontSize:'13px', fontWeight:'700', border:'1px solid #1e1e1e' }}>
+              💵 Caja
+            </a>
+            <a href={`/?business_id=${b.id}&view=kitchen`} target="_blank"
+              style={{ padding:'8px 14px', background:'#111', color:'#555', borderRadius:'8px', textDecoration:'none', fontSize:'13px', fontWeight:'700', border:'1px solid #1e1e1e' }}>
+              🔥 Cocina
+            </a>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -3,9 +3,11 @@ import { supabase } from './supabaseClient';
 
 export default function AdminProducts({ businessId, business: initialBusiness }) {
   const isShop = initialBusiness?.business_type === 'SHOP';
-  const [outputMode, setOutputMode] = useState(initialBusiness?.order_output_mode || 'SCREEN');
-  const [paperWidth, setPaperWidth] = useState(initialBusiness?.paper_width || 80);
-  const [savingMode, setSavingMode] = useState(false);
+  const [outputMode, setOutputMode]       = useState(initialBusiness?.order_output_mode || 'SCREEN');
+  const [paperWidth, setPaperWidth]       = useState(initialBusiness?.paper_width || 80);
+  const [whatsappNumber, setWhatsappNumber] = useState(initialBusiness?.whatsapp_number || '');
+  const [savingMode, setSavingMode]       = useState(false);
+  const [savingWa, setSavingWa]           = useState(false);
   const [categories, setCategories] = useState([]);
   const [products, setProducts] = useState([]);
   const [name, setName] = useState('');
@@ -144,6 +146,34 @@ export default function AdminProducts({ businessId, business: initialBusiness })
           <button onClick={() => window.location.href = `/?business_id=${businessId}`} style={{background:'#28a745', color:'white', border:'none', padding:'10px 20px', borderRadius:'8px', fontWeight:'bold', cursor:'pointer'}}>
             {isShop ? '🛍️ Ver Tienda' : '👀 Ver Menú (Modo Cliente)'}
           </button>
+        </div>
+      </div>
+
+      {/* ── CONFIGURACIÓN DEL NEGOCIO ── */}
+      <div style={{background:'#1a1a1a', border:'1px solid #2a2a2a', borderRadius:'12px', padding:'18px', marginBottom:'30px', display:'flex', flexWrap:'wrap', gap:'16px', alignItems:'center'}}>
+        <div style={{flex:1, minWidth:'260px'}}>
+          <label style={{fontSize:'12px', color:'#666', fontWeight:'700', display:'block', marginBottom:'6px', textTransform:'uppercase', letterSpacing:'1px'}}>
+            📲 Número de WhatsApp del negocio
+          </label>
+          <div style={{display:'flex', gap:'8px'}}>
+            <input
+              type="tel"
+              placeholder="Ej: 5493624123456"
+              value={whatsappNumber}
+              onChange={e => setWhatsappNumber(e.target.value.replace(/\D/g, ''))}
+              onBlur={async () => {
+                setSavingWa(true);
+                await supabase.from('businesses').update({ whatsapp_number: whatsappNumber || null }).eq('id', businessId);
+                setSavingWa(false);
+              }}
+              style={{flex:1, padding:'10px 14px', background:'#222', border:'1px solid #333', borderRadius:'8px', color:'white', fontSize:'14px', outline:'none', fontFamily:'monospace'}}
+            />
+            {savingWa
+              ? <span style={{color:'#555', fontSize:'12px', alignSelf:'center'}}>guardando...</span>
+              : whatsappNumber && <span style={{color:'#25d366', fontSize:'20px', alignSelf:'center'}}>✓</span>
+            }
+          </div>
+          <p style={{fontSize:'11px', color:'#555', margin:'5px 0 0 0'}}>Formato internacional sin + ni espacios. Ej: 5493624123456</p>
         </div>
       </div>
 
