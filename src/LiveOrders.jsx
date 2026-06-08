@@ -7,7 +7,7 @@ import { getLoyaltyTier, openWhatsAppLoyalty, fetchCustomer, upsertCustomer, nor
 const IN_SCOPE = ['PENDING_PAYMENT', 'PENDING_PAYMENT_CASH', 'PAID', 'IN_PREPARATION', 'READY'];
 
 // Status configuration: label, colors, next status, action button text
-const S = {
+const getS = (isShop) => ({
   PENDING_PAYMENT: {
     label: 'Por cobrar', badge: '💳',
     color: '#f59e0b', bg: '#120d00', border: '#f59e0b44',
@@ -23,22 +23,22 @@ const S = {
   PAID: {
     label: 'Pagado', badge: '🟠',
     color: '#ff6b35', bg: '#150800', border: '#ff6b3544',
-    next: 'IN_PREPARATION', action: '👨‍🍳 Iniciar preparación',
+    next: 'IN_PREPARATION', action: isShop ? '📦 Iniciar empaque' : '👨‍🍳 Iniciar preparación',
     sortWeight: 1,
   },
   IN_PREPARATION: {
-    label: 'En preparación', badge: '🔵',
+    label: isShop ? 'Empaquetando' : 'En preparación', badge: '🔵',
     color: '#0ea5e9', bg: '#00111f', border: '#0ea5e944',
-    next: 'READY', action: '🔔 Marcar listo',
+    next: 'READY', action: isShop ? '🔔 Listo para entregar' : '🔔 Marcar listo',
     sortWeight: 2,
   },
   READY: {
-    label: 'Listo ✓', badge: '🟢',
+    label: isShop ? 'Listo p/ envío ✓' : 'Listo ✓', badge: '🟢',
     color: '#22c55e', bg: '#001409', border: '#22c55e66',
-    next: 'DELIVERED', action: '✅ Entregar',
+    next: 'DELIVERED', action: isShop ? '🚚 Marcar enviado' : '✅ Entregar',
     sortWeight: 3,
   },
-};
+});
 
 function elapsed(createdAt) {
   const diff = Math.floor((Date.now() - new Date(createdAt)) / 1000);
@@ -88,11 +88,38 @@ export default function LiveOrders({ businessId, business }) {
   const [tick, setTick]           = useState(0);
   const [demoMode, setDemoMode]   = useState(false);
   const [advancing, setAdvancing] = useState({});
+  const [newOrders, setNewOrders] = useState([]);
+
+  const playSound = () => {
+    try {
+      const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
+      audio.play().catch(() => {});
+    } catch(e) {}
+  };
+
+  const triggerNewOrderAlert = (id) => {
+    playSound();
+    if (window.Notification && Notification.permission === 'granted') {
+       new Notification('¡Nuevo Pedido!', { body: `Llegó un nuevo pedido a AlToque` });
+    } else if (window.Notification && Notification.permission !== 'denied') {
+       Notification.requestPermission();
+    }
+    setNewOrders(prev => [...prev, id]);
+    setTimeout(() => {
+      setNewOrders(prev => prev.filter(x => x !== id));
+    }, 8000);
+  };
+
+  // Per-order delivery mode for shops: 'DELIVERY' | 'TAKEAWAY' | null
+  const [orderMode, setOrderMode] = useState({});
   // Phone capture modal: { orderId, currentPhone }
   const [captureModal, setCaptureModal] = useState(null);
   // Loyalty toast: { phone, name, totalOrders }
   const [loyaltyToast, setLoyaltyToast] = useState(null);
   const demoRef = useRef(null);
+  
+  const isShop = business?.business_type !== 'BAR';
+  const S = getS(isShop);
 
   // ── Data fetching ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -109,6 +136,7 @@ export default function LiveOrders({ businessId, business }) {
         if (payload.eventType === 'DELETE' || !IN_SCOPE.includes(status)) {
           setOrders(prev => prev.filter(o => o.id !== id));
         } else {
+          if (payload.eventType === 'INSERT') triggerNewOrderAlert(id);
           fetchSingleOrder(id);
         }
       }).subscribe();
@@ -151,13 +179,39 @@ export default function LiveOrders({ businessId, business }) {
     const cfg = S[order.status];
     if (!cfg) return;
 
-    // If advancing to PAID and no phone → offer to capture
-    if (cfg.next === 'PAID' && !order.customer_phone) {
+    // Shop: PENDING -> show WA contact + Retiro/Envio choice — handled via UI buttons, not here
+    // For bars: capture phone if missing when advancing to PAID
+    if (!isShop && cfg.next === 'PAID' && !order.customer_phone) {
       setCaptureModal({ orderId: order.id, currentPhone: '' });
       return;
     }
-
     await doAdvance(order);
+  };
+
+  // Shop-only: confirmar ENVIO → pasa a PAID para seguir el flujo normal (Empaque → Para envío)
+  const advanceAsDelivery = async (order) => {
+    setAdvancing(prev => ({ ...prev, [order.id]: true }));
+    const { error } = await supabase.from('orders').update({ status: 'PAID', order_type: 'DELIVERY', accepted_at: new Date().toISOString() }).eq('id', order.id);
+    if (error) { alert('Error: ' + error.message); }
+    else { await fetchOrders(); }
+    setAdvancing(prev => { const n = { ...prev }; delete n[order.id]; return n; });
+  };
+
+  // Shop-only: RETIRA → cliente pagó y se llevó el pedido, va directo a DELIVERED
+  const advanceAsPickup = async (order) => {
+    setAdvancing(prev => ({ ...prev, [order.id]: true }));
+    const { error } = await supabase.from('orders').update({ status: 'DELIVERED', order_type: 'PICKUP', accepted_at: new Date().toISOString(), ready_at: new Date().toISOString() }).eq('id', order.id);
+    if (error) {
+      alert('Error al marcar como entregado: ' + error.message);
+    } else {
+      // Remove immediately from local state (DELIVERED is out of scope)
+      setOrders(prev => prev.filter(o => o.id !== order.id));
+      // Upsert customer loyalty
+      if (order.customer_phone) {
+        await upsertCustomer(supabase, { businessId: order.business_id, phone: normalizePhone(order.customer_phone), name: order.customer_name });
+      }
+    }
+    setAdvancing(prev => { const n = { ...prev }; delete n[order.id]; return n; });
   };
 
   const doAdvance = async (order, overrides = {}) => {
@@ -170,7 +224,12 @@ export default function LiveOrders({ businessId, business }) {
       await supabase.from('orders').update(overrides).eq('id', order.id);
     }
 
-    await supabase.from('orders').update({ status: cfg.next }).eq('id', order.id);
+    let updatePayload = { status: cfg.next };
+    if (cfg.next === 'IN_PREPARATION' || (!isShop && cfg.next === 'PAID')) updatePayload.accepted_at = new Date().toISOString();
+    if (cfg.next === 'READY') updatePayload.ready_at = new Date().toISOString();
+    if (cfg.next === 'DELIVERED' && !order.ready_at) updatePayload.ready_at = new Date().toISOString();
+
+    await supabase.from('orders').update(updatePayload).eq('id', order.id);
     setAdvancing(prev => { const n = { ...prev }; delete n[order.id]; return n; });
 
     // Post-PAID: notify customer!
@@ -200,6 +259,7 @@ export default function LiveOrders({ businessId, business }) {
           phone: cleanPhone,
           name: order.customer_name,
           totalOrders: customer?.total_orders || 1,
+          orderType: order.order_type,  // pass along for correct message
           type: 'READY'
         });
         setTimeout(() => setLoyaltyToast(null), 15000);
@@ -252,8 +312,8 @@ export default function LiveOrders({ businessId, business }) {
     { key: 'ALL',            label: 'Todos',          count: orders.length },
     { key: 'PENDING_PAYMENT', label: 'Por cobrar',    count: countOf('PENDING_PAYMENT') },
     { key: 'PAID',            label: 'Pagados',       count: countOf('PAID') },
-    { key: 'IN_PREPARATION',  label: 'En prep',       count: countOf('IN_PREPARATION') },
-    { key: 'READY',           label: 'Listos',        count: countOf('READY') },
+    { key: 'IN_PREPARATION',  label: isShop ? 'Empaque' : 'En prep', count: countOf('IN_PREPARATION') },
+    { key: 'READY',           label: isShop ? 'Para envío' : 'Listos', count: countOf('READY') },
   ];
 
   return (
@@ -329,23 +389,27 @@ export default function LiveOrders({ businessId, business }) {
           const urgent  = isUrgent(order.created_at, order.status);
           const loading = advancing[order.id];
 
+          const isNew = newOrders.includes(order.id);
+
           return (
             <div key={order.id} style={{
               background: cfg.bg,
-              border: `2px solid ${urgent && order.status !== 'READY' ? '#ff4500' : cfg.color}`,
+              border: `2px solid ${isNew ? '#22c55e' : (urgent && order.status !== 'READY' ? '#ff4500' : cfg.color)}`,
               borderRadius: '16px',
               padding: '18px',
               display: 'flex',
               flexDirection: 'column',
               gap: '0',
-              boxShadow: order.status === 'READY' ? `0 0 24px ${cfg.color}33` : 'none',
+              boxShadow: isNew ? '0 0 20px rgba(34,197,94,0.6)' : (order.status === 'READY' ? `0 0 24px ${cfg.color}33` : 'none'),
               transition: 'all 0.3s',
               opacity: loading ? 0.7 : 1,
+              animation: isNew ? 'pulseBorder 1.5s infinite' : 'none'
             }}>
 
-              {/* L1: Number + Location */}
+              {/* L1: Number + Location + New Badge */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
                 <div>
+                  {isNew && <div style={{ background: '#22c55e', color: 'black', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: '900', display: 'inline-block', marginBottom: '4px' }}>🔥 NUEVO</div>}
                   <div style={{ fontSize: '64px', fontWeight: '900', color: 'white', letterSpacing: '-3px', lineHeight: 0.9 }}>
                     #{order.display_number}
                   </div>
@@ -357,14 +421,36 @@ export default function LiveOrders({ businessId, business }) {
                   </div>
                 </div>
                 <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                  <div style={{
-                    background: order.table_number ? '#17a2b822' : '#1a1a1a',
-                    color: order.table_number ? '#17a2b8' : '#444',
-                    padding: '7px 12px', borderRadius: '8px', fontWeight: '800', fontSize: '14px',
-                    border: `1px solid ${order.table_number ? '#17a2b844' : '#222'}`,
-                  }}>
-                    {order.table_number ? `Mesa ${order.table_number}` : 'Barra'}
-                  </div>
+                  {/* Shop PENDING: Retiro/Envio selector badge */}
+                  {isShop && ['PENDING_PAYMENT', 'PENDING_PAYMENT_CASH'].includes(order.status) ? (
+                    <div style={{ display:'flex', gap:'4px' }}>
+                      <button
+                        onClick={() => setOrderMode(prev => ({ ...prev, [order.id]: 'TAKEAWAY' }))}
+                        style={{
+                          padding: '6px 10px', borderRadius: '8px', fontSize: '12px', fontWeight: '900', border: 'none', cursor: 'pointer',
+                          background: orderMode[order.id] === 'TAKEAWAY' ? '#22c55e' : '#1e3a1e',
+                          color: orderMode[order.id] === 'TAKEAWAY' ? '#000' : '#22c55e',
+                        }}
+                      >🏪 Retira</button>
+                      <button
+                        onClick={() => setOrderMode(prev => ({ ...prev, [order.id]: 'DELIVERY' }))}
+                        style={{
+                          padding: '6px 10px', borderRadius: '8px', fontSize: '12px', fontWeight: '900', border: 'none', cursor: 'pointer',
+                          background: orderMode[order.id] === 'DELIVERY' ? '#60a5fa' : '#1a2a3e',
+                          color: orderMode[order.id] === 'DELIVERY' ? '#000' : '#60a5fa',
+                        }}
+                      >🚚 Envío</button>
+                    </div>
+                  ) : (
+                    <div style={{
+                      background: order.table_number ? '#17a2b822' : '#1a1a1a',
+                      color: order.table_number ? '#17a2b8' : '#444',
+                      padding: '7px 12px', borderRadius: '8px', fontWeight: '800', fontSize: '14px',
+                      border: `1px solid ${order.table_number ? '#17a2b844' : '#222'}`,
+                    }}>
+                      {order.table_number ? `Mesa ${order.table_number}` : (isShop ? (order.order_type === 'DELIVERY' ? '🚚 Envío' : order.order_type === 'PICKUP' ? '🏪 Retira' : 'Tienda') : 'Barra')}
+                    </div>
+                  )}
                   <div style={{ fontSize: '11px', color: '#333', textAlign: 'right' }}>
                     ⏱ {elapsed(order.created_at)}
                   </div>
@@ -373,26 +459,50 @@ export default function LiveOrders({ businessId, business }) {
 
               {/* L3+4: Products + modifiers */}
               <div style={{ borderTop: '1px solid #111', paddingTop: '12px', marginBottom: '14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {(order.order_items || []).map((item, i) => (
-                  <div key={i}>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
-                      <span style={{ fontSize: '18px', fontWeight: '900', color: cfg.color, minWidth: '24px' }}>{item.quantity}×</span>
-                      <span style={{ fontSize: '16px', fontWeight: '700', color: '#f0f0f0' }}>{item.products?.name || '—'}</span>
-                    </div>
-                    {item.order_item_modifiers?.length > 0 && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', paddingLeft: '30px', marginTop: '3px' }}>
-                        {item.order_item_modifiers.map((m, j) => (
-                          <span key={j} style={{ fontSize: '11px', color: '#555', background: '#111', padding: '2px 8px', borderRadius: '20px', border: '1px solid #1e1e1e' }}>
-                            {m.modifier_name}
-                          </span>
-                        ))}
+                {order.items && order.items.length > 0 ? (
+                  order.items.map((item, i) => (
+                    <div key={i}>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+                        <span style={{ fontSize: '18px', fontWeight: '900', color: cfg.color, minWidth: '24px' }}>{item.quantity}×</span>
+                        <span style={{ fontSize: '16px', fontWeight: '700', color: '#f0f0f0' }}>{item.name}{item.variant ? ` (${item.variant})` : ''}</span>
                       </div>
-                    )}
-                    {item.notes && (
-                      <p style={{ margin: '3px 0 0 30px', fontSize: '12px', color: '#444', fontStyle: 'italic' }}>📝 {item.notes}</p>
-                    )}
-                  </div>
-                ))}
+                      {item.notes && item.notes.trim() && (
+                        <div style={{ margin: '3px 0 0 30px', fontSize: '13px', color: '#ccc', fontStyle: 'italic', background: '#111', padding: '4px 8px', borderRadius: '4px', display: 'inline-block' }}>
+                          Obs: {item.notes}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  (order.order_items || []).map((item, i) => {
+                    const modsArray = item.order_item_modifiers || [];
+                    let variantText = modsArray.map(m => m.modifier_name).join(', ');
+                    let hasVariantNotes = item.notes && item.notes.startsWith('Variante: ');
+                    let displayName = item.products?.name || '—';
+                    
+                    if (hasVariantNotes) {
+                       let splitNote = item.notes.split('\n');
+                       variantText = splitNote[0].replace('Variante: ', '').trim();
+                       item.notes = splitNote.slice(1).join('\n') || null;
+                    }
+                    
+                    if (variantText) displayName += ` (${variantText})`;
+
+                    return (
+                      <div key={i}>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+                          <span style={{ fontSize: '18px', fontWeight: '900', color: cfg.color, minWidth: '24px' }}>{item.quantity}×</span>
+                          <span style={{ fontSize: '16px', fontWeight: '700', color: '#f0f0f0' }}>{displayName}</span>
+                        </div>
+                        {item.notes && item.notes.trim() && (
+                          <div style={{ margin: '3px 0 0 30px', fontSize: '13px', color: '#ccc', fontStyle: 'italic', background: '#111', padding: '4px 8px', borderRadius: '4px', display: 'inline-block' }}>
+                            Obs: {item.notes}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
               </div>
 
               {/* Total */}
@@ -404,6 +514,33 @@ export default function LiveOrders({ businessId, business }) {
                   ${Number(order.total).toLocaleString('es-AR')}
                 </span>
               </div>
+
+
+              {/* Shop: customer identity strip */}
+              {isShop && (order.customer_name || order.customer_phone) && (
+                <div style={{ display:'flex', alignItems:'center', gap:'10px', padding:'8px 10px', background:'#25d36611', border:'1px solid #25d36633', borderRadius:'10px', marginBottom:'8px' }}>
+                  <span style={{ fontSize:'16px' }}>👤</span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    {order.customer_name && <div style={{ fontSize:'13px', fontWeight:'900', color:'#25d366', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{order.customer_name}</div>}
+                    {order.customer_phone && <div style={{ fontSize:'11px', color:'#1a7a45', fontWeight:'600' }}>{order.customer_phone}</div>}
+                  </div>
+                </div>
+              )}
+
+              {/* Shop WA contact button */}
+              {isShop && order.customer_phone && ['PENDING_PAYMENT', 'PENDING_PAYMENT_CASH'].includes(order.status) && (() => {
+                const cleanWa = normalizePhone(order.customer_phone);
+                const items = (order.order_items || []).map(i => `• ${i.quantity}x ${i.products?.name || '?'}`).join('\n');
+                const waMsg = `Hola ${order.customer_name || 'Cliente'}! 👋\nTe contactamos de *${business?.name}* por tu pedido #${order.display_number}:\n\n${items}\n\n¿Cómo querés pagar? ¿Pasás a retirar o querés que te lo enviemos?`;
+                const waUrl = `https://wa.me/${cleanWa}?text=${encodeURIComponent(waMsg)}`;
+                return (
+                  <a href={waUrl} target="_blank" rel="noreferrer"
+                    style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', padding:'10px', background:'#25d36622', color:'#25d366', border:'1px solid #25d36644', borderRadius:'10px', fontWeight:'800', fontSize:'13px', textDecoration:'none', marginBottom:'8px' }}
+                  >
+                    📲 Contactar al cliente por WhatsApp
+                  </a>
+                );
+              })()}
 
               {/* L2: Action + secondary actions */}
               <div style={{ display: 'flex', gap: '8px', marginTop: 'auto' }}>
@@ -421,25 +558,49 @@ export default function LiveOrders({ businessId, business }) {
                   🖨️
                 </button>
 
-                {/* Main action */}
-                <button
-                  onClick={() => advance(order)}
-                  disabled={loading}
-                  style={{
-                    flex: 1, padding: '14px',
-                    background: loading ? '#111' : cfg.color,
-                    color: loading ? '#555' : (order.status === 'READY' ? '#000' : '#fff'),
-                    border: 'none', borderRadius: '10px',
-                    fontSize: '15px', fontWeight: '900',
-                    cursor: loading ? 'not-allowed' : 'pointer',
-                    boxShadow: order.status === 'READY' ? `0 4px 20px ${cfg.color}44` : 'none',
-                    transition: 'all 0.2s',
-                  }}
-                  onMouseDown={e => { if (!loading) e.currentTarget.style.transform = 'scale(0.97)'; }}
-                  onMouseUp={e => { e.currentTarget.style.transform = 'scale(1)'; }}
-                >
-                  {loading ? '...' : cfg.action}
-                </button>
+                {/* Shop PENDING: single confirm button that routes based on selector */}
+                {isShop && ['PENDING_PAYMENT', 'PENDING_PAYMENT_CASH'].includes(order.status) ? (
+                  <button
+                    onClick={() => {
+                      const mode = orderMode[order.id];
+                      if (!mode) { alert('Elegir primero si retira o es envío (botones superiores).'); return; }
+                      if (mode === 'TAKEAWAY') advanceAsPickup(order);
+                      else advanceAsDelivery(order);
+                    }}
+                    disabled={loading}
+                    style={{
+                      flex: 1, padding: '14px',
+                      background: loading ? '#111' : (orderMode[order.id] === 'TAKEAWAY' ? '#22c55e' : orderMode[order.id] === 'DELIVERY' ? '#60a5fa' : '#333'),
+                      color: loading ? '#555' : '#000',
+                      border: 'none', borderRadius: '10px',
+                      fontSize: '15px', fontWeight: '900',
+                      cursor: loading ? 'not-allowed' : 'pointer',
+                      transition: 'all 0.2s',
+                    }}
+                  >
+                    {loading ? '...' : !orderMode[order.id] ? '✔ Pago (seleccionar arriba)' : orderMode[order.id] === 'TAKEAWAY' ? '✅ Cobrado — Listo!' : '✅ Cobrado — Empaque'}
+                  </button>
+                ) : (
+                  /* Normal main action for all other statuses */
+                  <button
+                    onClick={() => advance(order)}
+                    disabled={loading}
+                    style={{
+                      flex: 1, padding: '14px',
+                      background: loading ? '#111' : cfg.color,
+                      color: loading ? '#555' : (order.status === 'READY' ? '#000' : '#fff'),
+                      border: 'none', borderRadius: '10px',
+                      fontSize: '15px', fontWeight: '900',
+                      cursor: loading ? 'not-allowed' : 'pointer',
+                      boxShadow: order.status === 'READY' ? `0 4px 20px ${cfg.color}44` : 'none',
+                      transition: 'all 0.2s',
+                    }}
+                    onMouseDown={e => { if (!loading) e.currentTarget.style.transform = 'scale(0.97)'; }}
+                    onMouseUp={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+                  >
+                    {loading ? '...' : cfg.action}
+                  </button>
+                )}
               </div>
             </div>
           );
@@ -514,7 +675,9 @@ export default function LiveOrders({ businessId, business }) {
             
             <button onClick={() => {
               const msg = isReady 
-                ? `¡Hola ${loyaltyToast.name || ''}! Tu pedido ya está listo para retirar en *${business?.name}* 🍺`
+                ? loyaltyToast.orderType === 'DELIVERY'
+                  ? `¡Hola ${loyaltyToast.name || ''}! 🚚 Tu pedido de *${business?.name}* ya está en camino. ¡Pronto lo recibís!`
+                  : `¡Hola ${loyaltyToast.name || ''}! ✅ Tu pedido en *${business?.name}* está listo para retirar. 🏪`
                 : openWhatsAppLoyalty({ phone: loyaltyToast.phone, businessName: business?.name || 'AlToque', customerName: loyaltyToast.name, totalOrders: loyaltyToast.totalOrders });
               
               if (isReady) {

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 
 export default function AdminProducts({ businessId, business: initialBusiness }) {
-  const isShop = initialBusiness?.business_type === 'SHOP';
+  const isShop = initialBusiness?.business_type !== 'BAR';
   const [outputMode, setOutputMode]       = useState(initialBusiness?.order_output_mode || 'SCREEN');
   const [paperWidth, setPaperWidth]       = useState(initialBusiness?.paper_width || 80);
   const [whatsappNumber, setWhatsappNumber] = useState(initialBusiness?.whatsapp_number || '');
@@ -14,11 +14,20 @@ export default function AdminProducts({ businessId, business: initialBusiness })
   const [price, setPrice] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [description, setDescription] = useState('');
+  const [imageUrl, setImageUrl] = useState('');
+  const [uploadingImage, setUploadingImage] = useState(false);
   const [isUpsell, setIsUpsell] = useState(false);
   const [expandedModProduct, setExpandedModProduct] = useState(null);
   const [productModifiers, setProductModifiers] = useState([]);
   const [newModName, setNewModName] = useState('');
   const [newModDelta, setNewModDelta] = useState('');
+
+  // Editing state
+  const [editingId, setEditingId] = useState(null);
+  const [logoUrl, setLogoUrl] = useState(initialBusiness?.logo_url || '');
+  const [bannerUrl, setBannerUrl] = useState(initialBusiness?.banner_url || '');
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [uploadingBanner, setUploadingBanner] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -40,25 +49,98 @@ export default function AdminProducts({ businessId, business: initialBusiness })
     if (data) setCategories([...categories, data]);
     if (error) alert("Error: " + error.message);
   };
+  const handleImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setUploadingImage(true);
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${businessId}/${Date.now()}-${Math.floor(Math.random()*10000)}.${fileExt}`;
+
+    const { error: uploadError } = await supabase.storage.from('products').upload(fileName, file);
+    if (uploadError) {
+      alert("Error al subir la imagen. Por favor, asegúrate de crear un bucket PÚBLICO llamado 'products' en Supabase Storage.\nDetalle: " + uploadError.message);
+    } else {
+      const { data } = supabase.storage.from('products').getPublicUrl(fileName);
+      setImageUrl(data.publicUrl);
+    }
+    setUploadingImage(false);
+  };
 
   const addProduct = async (e) => {
     e.preventDefault();
-    if (!name || !price || !categoryId) return alert("Llena todos los campos (Condición opcional)");
-    const cleanDesc = description ? description.toLowerCase().trim() : null;
-    const { error } = await supabase.from('products').insert({
-      business_id: businessId,
-      category_id: categoryId,
-      name: name,
-      description: cleanDesc,
-      price: parseFloat(price),
-      is_upsell_target: isUpsell,
-      available: true
-    });
-    if (error) alert("Error guardando producto: " + error.message);
-    else {
-      setName(''); setPrice(''); setDescription(''); setIsUpsell(false);
-      fetchData();
+    if (!name || !price || !categoryId) return alert("Llena los campos requeridos (Nombre, Precio, Categoría)");
+    const cleanDesc = description ? description.trim() : null;
+    
+    if (editingId) {
+      const { error } = await supabase.from('products').update({
+        category_id: categoryId,
+        name: name,
+        description: cleanDesc,
+        price: parseFloat(price),
+        image_url: imageUrl || null,
+        is_upsell_target: isUpsell,
+      }).eq('id', editingId);
+      
+      if (error) alert("Error actualizando: " + error.message);
+      else {
+        setEditingId(null);
+        setName(''); setPrice(''); setDescription(''); setIsUpsell(false); setImageUrl('');
+        fetchData();
+      }
+    } else {
+      const { error } = await supabase.from('products').insert({
+        business_id: businessId,
+        category_id: categoryId,
+        name: name,
+        description: cleanDesc,
+        price: parseFloat(price),
+        image_url: imageUrl || null,
+        is_upsell_target: isUpsell,
+        available: true
+      });
+      if (error) alert("Error guardando producto: " + error.message);
+      else {
+        setName(''); setPrice(''); setDescription(''); setIsUpsell(false); setImageUrl('');
+        fetchData();
+      }
     }
+  };
+
+  const startEdit = (p) => {
+    setEditingId(p.id);
+    setName(p.name);
+    setPrice(p.price.toString());
+    setCategoryId(p.category_id);
+    setDescription(p.description || '');
+    setImageUrl(p.image_url || '');
+    setIsUpsell(p.is_upsell_target || false);
+    window.scrollTo({ top: 300, behavior: 'smooth' });
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setName(''); setPrice(''); setDescription(''); setIsUpsell(false); setImageUrl('');
+  };
+
+  const handleBrandingUpload = async (e, field) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const isLogo = field === 'logo_url';
+    if (isLogo) setUploadingLogo(true); else setUploadingBanner(true);
+    
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${businessId}/branding_${field}_${Date.now()}.${fileExt}`;
+
+    const { error: uploadError } = await supabase.storage.from('products').upload(fileName, file);
+    if (uploadError) {
+      alert("Error al subir: " + uploadError.message);
+    } else {
+      const { data } = supabase.storage.from('products').getPublicUrl(fileName);
+      const url = data.publicUrl;
+      await supabase.from('businesses').update({ [field]: url }).eq('id', businessId);
+      if (isLogo) setLogoUrl(url); else setBannerUrl(url);
+    }
+    if (isLogo) setUploadingLogo(false); else setUploadingBanner(false);
   };
 
   const toggleProductField = async (productId, field, currentValue) => {
@@ -70,24 +152,34 @@ export default function AdminProducts({ businessId, business: initialBusiness })
     if (expandedModProduct === productId) { setExpandedModProduct(null); return; }
     setExpandedModProduct(productId);
     setNewModName(''); setNewModDelta('');
-    const { data } = await supabase.from('product_modifiers').select('*').eq('product_id', productId).order('sort_order');
+    const targetTable = isShop ? 'product_variants' : 'product_modifiers';
+    const { data } = await supabase.from(targetTable).select('*').eq('product_id', productId).order('created_at', { ascending: true });
     setProductModifiers(data || []);
   };
 
   const addModifier = async (productId) => {
     if (!newModName.trim()) return;
-    const { data, error } = await supabase.from('product_modifiers').insert({
-      product_id: productId,
-      name: newModName.trim(),
-      price_delta: parseFloat(newModDelta) || 0,
-      sort_order: productModifiers.length
-    }).select().single();
+    const targetTable = isShop ? 'product_variants' : 'product_modifiers';
+    const body = isShop ? {
+      product_id: productId, name: newModName.trim(), price_modifier: parseFloat(newModDelta) || 0, stock: -1, active: true
+    } : {
+      product_id: productId, name: newModName.trim(), price_delta: parseFloat(newModDelta) || 0, sort_order: productModifiers.length
+    };
+    
+    const { data, error } = await supabase.from(targetTable).insert(body).select().single();
     if (!error && data) { setProductModifiers(prev => [...prev, data]); setNewModName(''); setNewModDelta(''); }
   };
 
   const deleteModifier = async (modId) => {
-    await supabase.from('product_modifiers').delete().eq('id', modId);
+    const targetTable = isShop ? 'product_variants' : 'product_modifiers';
+    await supabase.from(targetTable).delete().eq('id', modId);
     setProductModifiers(prev => prev.filter(m => m.id !== modId));
+  };
+  
+  const toggleVariantStatus = async (modId, field, curr) => {
+    if (!isShop) return;
+    const { error } = await supabase.from('product_variants').update({ [field]: !curr }).eq('id', modId);
+    if(!error) setProductModifiers(prev => prev.map(m => m.id === modId ? { ...m, [field]: !curr } : m));
   };
 
   const deleteProduct = async (productId, productName) => {
@@ -175,6 +267,24 @@ export default function AdminProducts({ businessId, business: initialBusiness })
           </div>
           <p style={{fontSize:'11px', color:'#555', margin:'5px 0 0 0'}}>Formato internacional sin + ni espacios. Ej: 5493624123456</p>
         </div>
+
+        {/* LOGO & BANNER */}
+        <div style={{flex:1, minWidth:'260px', display:'flex', gap:'16px'}}>
+           <div>
+             <label style={{fontSize:'12px', color:'#666', fontWeight:'700', display:'block', marginBottom:'6px', textTransform:'uppercase'}}>Logo (Circular)</label>
+             <div style={{position:'relative', width:'70px', height:'70px', borderRadius:'50%', background:'#222', border:'2px dashed #444', overflow:'hidden'}}>
+               {logoUrl ? <img src={logoUrl} style={{width:'100%', height:'100%', objectFit:'cover'}} /> : <span style={{position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'24px'}}>📸</span>}
+               <input type="file" onChange={e => handleBrandingUpload(e, 'logo_url')} style={{position:'absolute', inset:0, opacity:0, cursor:'pointer'}} disabled={uploadingLogo} />
+             </div>
+           </div>
+           <div>
+             <label style={{fontSize:'12px', color:'#666', fontWeight:'700', display:'block', marginBottom:'6px', textTransform:'uppercase'}}>Portada (Banner)</label>
+             <div style={{position:'relative', width:'140px', height:'70px', borderRadius:'10px', background:'#222', border:'2px dashed #444', overflow:'hidden'}}>
+                {bannerUrl ? <img src={bannerUrl} style={{width:'100%', height:'100%', objectFit:'cover'}} /> : <span style={{position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'24px'}}>🖼️</span>}
+                <input type="file" onChange={e => handleBrandingUpload(e, 'banner_url')} style={{position:'absolute', inset:0, opacity:0, cursor:'pointer'}} disabled={uploadingBanner} />
+             </div>
+           </div>
+        </div>
       </div>
 
       <div style={{display:'flex', gap:'20px', flexWrap:'wrap', marginBottom:'40px'}}>
@@ -184,16 +294,43 @@ export default function AdminProducts({ businessId, business: initialBusiness })
           <p style={{fontSize:'12px', color:'#aaa'}}>Las categorías son obligatorias.</p>
           <button onClick={addCategory} style={{padding:'10px', background:'#333', color:'#fff', border:'none', borderRadius:'8px', width:'100%', marginBottom:'20px'}}>+ Crear Categoría</button>
 
-          <h4 style={{borderTop:'1px solid #333', paddingTop:'20px'}}>Paso 2: Nuevo Producto o Promo</h4>
+          <h4 style={{borderTop:'1px solid #333', paddingTop:'20px'}}>{editingId ? '📍 Editando Producto' : 'Paso 2: Nuevo Producto o Promo'}</h4>
           <form onSubmit={addProduct} style={{display:'flex', flexDirection:'column', gap:'15px'}}>
             <input type="text" placeholder="Nombre (ej. Promo Happy Hour)" value={name} onChange={e => setName(e.target.value)}
-              style={{padding:'15px', borderRadius:'10px', background:'#333', color:'white', border:'none'}}/>
+              style={{padding:'15px', borderRadius:'10px', background:'#333', color:'white', border: editingId ? '1px solid var(--primary)' : 'none'}}/>
+            
+            {/* Descripción / Detalle para todos los negocios */}
+            <textarea 
+              placeholder={isShop ? "Detalle del producto (talles, materiales, etc)" : "Detalle / Condición de sugerencia"} 
+              value={description} 
+              onChange={e => setDescription(e.target.value)}
+              style={{padding:'15px', borderRadius:'10px', background:'#333', color:'white', border:'none', minHeight:'60px', fontFamily:'inherit'}}
+            />
+
             <input type="number" placeholder="Precio (ej. 5000)" value={price} onChange={e => setPrice(e.target.value)}
               style={{padding:'15px', borderRadius:'10px', background:'#333', color:'white', border:'none'}}/>
             <select value={categoryId} onChange={e => setCategoryId(e.target.value)} style={{padding:'15px', borderRadius:'10px', background:'#333', color:'white', border:'none'}}>
               <option value="">Selecciona Categoría...</option>
               {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
+            {isShop && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                  <input type="url" placeholder="URL de Imagen (opcional)" value={imageUrl} onChange={e => setImageUrl(e.target.value)}
+                    style={{ flex: 1, padding:'15px', borderRadius:'10px', background:'#333', color:'white', border:'none'}}/>
+                  <span style={{color: '#888', fontWeight: 'bold'}}>O</span>
+                  <label style={{ cursor: uploadingImage ? 'not-allowed' : 'pointer', padding: '15px 20px', background: uploadingImage ? '#555' : '#17a2b8', borderRadius: '10px', color: 'white', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {uploadingImage ? '⏳...' : '📸 Subir Foto'}
+                    <input type="file" accept="image/*" onChange={handleImageUpload} style={{ display: 'none' }} disabled={uploadingImage} />
+                  </label>
+                </div>
+                {imageUrl && (
+                  <div style={{ width: '100px', height: '100px', borderRadius: '10px', overflow: 'hidden', border: '2px solid #555' }}>
+                    <img src={imageUrl} alt="preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  </div>
+                )}
+              </div>
+            )}
 
             {!isShop && (
               <>
@@ -214,9 +351,16 @@ export default function AdminProducts({ businessId, business: initialBusiness })
               </>
             )}
 
-            <button type="submit" style={{padding:'15px', background:'var(--primary)', color:'white', border:'none', borderRadius:'10px', fontWeight:'bold', fontSize:'16px'}}>
-              Agregar Producto
-            </button>
+            <div style={{display:'flex', gap:'10px'}}>
+              <button type="submit" style={{flex:2, padding:'15px', background: editingId ? '#ffc107' : 'var(--primary)', color: editingId ? 'black' : 'white', border:'none', borderRadius:'10px', fontWeight:'bold', fontSize:'16px', cursor:'pointer'}}>
+                {editingId ? '💾 Actualizar Producto' : 'Agregar Producto'}
+              </button>
+              {editingId && (
+                <button type="button" onClick={cancelEdit} style={{flex:1, padding:'15px', background:'#444', color:'white', border:'none', borderRadius:'10px', fontWeight:'bold', cursor:'pointer'}}>
+                  Cancelar
+                </button>
+              )}
+            </div>
           </form>
         </div>
 
@@ -237,13 +381,15 @@ export default function AdminProducts({ businessId, business: initialBusiness })
                       <div key={p.id} style={{background:'#222', borderRadius:'8px', overflow:'hidden', opacity: p.available ? 1 : 0.5}}>
                         <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 15px', flexWrap:'wrap', gap:'8px'}}>
                           <div style={{flexGrow:1}}>
-                            <strong style={{fontSize:'16px', color: p.is_upsell_target ? 'var(--primary)' : 'white'}}>{p.name}</strong>
+                            <strong style={{fontSize:'16px', color: p.is_upsell_target ? (isShop ? '#818cf8' : 'var(--primary)') : 'white'}}>{p.name}</strong>
                             <span style={{color:'var(--success)', marginLeft:'10px', fontWeight:'bold'}}>${p.price}</span>
-                            {p.is_upsell_target && <span style={{marginLeft:'8px', fontSize:'10px', background:'var(--primary)', color:'white', padding:'2px 6px', borderRadius:'4px'}}>UPSELL</span>}
+                            {p.description && <div style={{fontSize:'12px', color:'#666', marginTop:'2px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'200px'}}>{p.description}</div>}
+                            {p.is_upsell_target && <span style={{marginLeft:'8px', fontSize:'10px', background: isShop ? '#6366f1' : 'var(--primary)', color:'white', padding:'2px 6px', borderRadius:'4px'}}>{isShop ? '⭐ DESTACADO' : 'UPSELL'}</span>}
                           </div>
                           <div style={{display:'flex', gap:'6px', flexWrap:'wrap'}}>
-                            <button onClick={() => openModifiers(p.id)} style={{background: expandedModProduct === p.id ? '#17a2b8' : '#2a2a3a', color:'white', border:'none', padding:'7px 10px', borderRadius:'6px', cursor:'pointer', fontSize:'12px'}}>⚙️ Mods</button>
-                            <button onClick={() => toggleProductField(p.id, 'is_upsell_target', p.is_upsell_target)} style={{background: p.is_upsell_target ? 'var(--primary)' : '#444', color:'white', border:'none', padding:'7px 10px', borderRadius:'6px', cursor:'pointer', fontSize:'12px'}}>🔥 Popup</button>
+                            <button onClick={() => startEdit(p)} style={{background: '#444', color:'white', border:'none', padding:'7px 10px', borderRadius:'6px', cursor:'pointer', fontSize:'12px'}}>✏️ Editar</button>
+                            <button onClick={() => openModifiers(p.id)} style={{background: expandedModProduct === p.id ? '#17a2b8' : '#2a2a3a', color:'white', border:'none', padding:'7px 10px', borderRadius:'6px', cursor:'pointer', fontSize:'12px'}}>⚙️ Config</button>
+                            <button onClick={() => toggleProductField(p.id, 'is_upsell_target', p.is_upsell_target)} style={{background: p.is_upsell_target ? (isShop ? '#6366f1' : 'var(--primary)') : '#444', color:'white', border:'none', padding:'7px 10px', borderRadius:'6px', cursor:'pointer', fontSize:'12px'}}>{isShop ? (p.is_upsell_target ? '⭐ Destacado' : '⭐ Destacar') : (p.is_upsell_target ? '🔥 Popup ON' : '🔥 Popup')}</button>
                             <button onClick={() => toggleProductField(p.id, 'available', p.available)} style={{background: p.available ? '#28a745' : '#444', color:'white', border:'none', padding:'7px 10px', borderRadius:'6px', cursor:'pointer', fontSize:'12px'}}>{p.available ? '✅ Stock' : '❌ Agotado'}</button>
                             <button onClick={() => deleteProduct(p.id, p.name)} style={{background:'transparent', color:'#ff4444', border:'1px solid #ff444433', padding:'7px 10px', borderRadius:'6px', cursor:'pointer', fontSize:'12px'}}>🗑️</button>
                           </div>
@@ -251,22 +397,27 @@ export default function AdminProducts({ businessId, business: initialBusiness })
 
                         {expandedModProduct === p.id && (
                           <div style={{background:'#111', borderTop:'2px solid #17a2b8', padding:'12px 15px'}}>
-                            <p style={{margin:'0 0 8px 0', fontSize:'11px', color:'#17a2b8', fontWeight:'bold', textTransform:'uppercase'}}>Opciones del producto (max 4)</p>
-                            {productModifiers.map(mod => (
-                              <div key={mod.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'7px 10px', background:'#1a1a1a', borderRadius:'6px', marginBottom:'5px'}}>
+                            <p style={{margin:'0 0 8px 0', fontSize:'11px', color:'#17a2b8', fontWeight:'bold', textTransform:'uppercase'}}>{isShop ? 'Variantes/Talles/Colores' : 'Opciones del producto (max 4)'}</p>
+                            {productModifiers.map(mod => {
+                              const pDelta = isShop ? mod.price_modifier : mod.price_delta;
+                              return (
+                              <div key={mod.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'7px 10px', background:'#1a1a1a', borderRadius:'6px', marginBottom:'5px', opacity: (isShop && !mod.active) ? 0.5 : 1}}>
                                 <span style={{color:'#eee', fontSize:'14px'}}>{mod.name}</span>
                                 <div style={{display:'flex', gap:'10px', alignItems:'center'}}>
-                                  {Number(mod.price_delta) > 0 && <span style={{color:'var(--success)', fontWeight:'bold', fontSize:'13px'}}>+${mod.price_delta}</span>}
+                                  {Number(pDelta) > 0 && <span style={{color:'var(--success)', fontWeight:'bold', fontSize:'13px'}}>+${pDelta}</span>}
+                                  {isShop && (
+                                    <button onClick={() => toggleVariantStatus(mod.id, 'active', mod.active)} style={{background:'transparent', border:'none', cursor:'pointer', fontSize:'12px'}}>{mod.active ? '✅' : '❌'}</button>
+                                  )}
                                   <button onClick={() => deleteModifier(mod.id)} style={{background:'transparent', color:'#ff4444', border:'none', cursor:'pointer', fontSize:'16px', lineHeight:1}}>×</button>
                                 </div>
                               </div>
-                            ))}
-                            {productModifiers.length < 4 && (
+                            )})}
+                            {(isShop || productModifiers.length < 4) && (
                               <div style={{display:'flex', gap:'8px', marginTop:'8px'}}>
-                                <input placeholder="Ej: Extra cheddar" value={newModName} onChange={e => setNewModName(e.target.value)}
+                                <input placeholder={isShop ? "Ej: Rojo - M" : "Ej: Extra cheddar"} value={newModName} onChange={e => setNewModName(e.target.value)}
                                   style={{flex:2, padding:'8px', background:'#222', border:'1px solid #444', borderRadius:'6px', color:'white', fontSize:'13px'}} />
                                 <input placeholder="+precio" type="number" min="0" value={newModDelta} onChange={e => setNewModDelta(e.target.value)}
-                                  style={{flex:1, padding:'8px', background:'#222', border:'1px solid #444', borderRadius:'6px', color:'white', fontSize:'13px'}} />
+                                  style={{flex:1, width:'80px', padding:'8px', background:'#222', border:'1px solid #444', borderRadius:'6px', color:'white', fontSize:'13px'}} />
                                 <button onClick={() => addModifier(p.id)} style={{padding:'8px 14px', background:'#17a2b8', border:'none', borderRadius:'6px', color:'white', fontWeight:'bold', cursor:'pointer', fontSize:'15px'}}>+</button>
                               </div>
                             )}

@@ -15,7 +15,7 @@ export async function fetchOrderForPrint(supabase, orderId) {
   const { data } = await supabase
     .from('orders')
     .select(`
-      id, display_number, table_number, total, payment_method, created_at,
+      id, display_number, table_number, total, payment_method, created_at, items,
       order_items (
         quantity, unit_price, notes,
         products ( name ),
@@ -47,24 +47,41 @@ export function generateReceiptHTML(order, businessName = 'AlToque', paperWidth 
   const location = order.table_number ? `Mesa ${order.table_number}` : 'Retiro en barra';
   const payment = order.payment_method === 'CASH' ? 'Efectivo' : 'Digital';
 
-  const itemsHTML = (order.order_items || []).map(item => {
-    const mods = (item.order_item_modifiers || []).map(m =>
-      `<div class="mod">+ ${m.modifier_name}</div>`
-    ).join('');
-    const note = item.notes
-      ? `<div class="note">📝 ${item.notes}</div>`
-      : '';
-    return `
-      <div class="item">
-        <div class="item-row">
-          <span class="qty">${item.quantity}x</span>
-          <span class="pname">${item.products?.name || '—'}</span>
-          <span class="price">$${(item.unit_price * item.quantity).toLocaleString('es-AR')}</span>
-        </div>
-        ${mods}
-        ${note}
-      </div>`;
-  }).join('<div class="divider"></div>');
+  let itemsHTML = '';
+  if (order.items && order.items.length > 0) {
+    itemsHTML = order.items.map(item => {
+      const variantHtml = item.variant ? `<div class="mod">+ ${item.variant}</div>` : '';
+      const notesHtml = item.notes ? `<div class="note">📝 ${item.notes}</div>` : '';
+      return `
+        <div class="item">
+          <div class="item-row">
+            <span class="qty">${item.quantity}x</span>
+            <span class="pname">${item.name}</span>
+          </div>
+          ${variantHtml}
+          ${notesHtml}
+        </div>`;
+    }).join('<div class="divider"></div>');
+  } else {
+    itemsHTML = (order.order_items || []).map(item => {
+      const mods = (item.order_item_modifiers || []).map(m =>
+        `<div class="mod">+ ${m.modifier_name}</div>`
+      ).join('');
+      const note = item.notes
+        ? `<div class="note">📝 ${item.notes}</div>`
+        : '';
+      return `
+        <div class="item">
+          <div class="item-row">
+            <span class="qty">${item.quantity}x</span>
+            <span class="pname">${item.products?.name || '—'}</span>
+            <span class="price">$${(item.unit_price * item.quantity).toLocaleString('es-AR')}</span>
+          </div>
+          ${mods}
+          ${note}
+        </div>`;
+    }).join('<div class="divider"></div>');
+  }
 
   return `<!DOCTYPE html>
 <html lang="es">

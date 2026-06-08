@@ -6,21 +6,17 @@ import { supabase } from './supabaseClient';
 import { getLoyaltyTier, openWhatsAppLoyalty } from './customerRetention';
 import { useEffect } from 'react';
 
-const TABS = [
-  { key: 'live',      label: 'Pedidos',    icon: '⚡', color: '#FF4500' },
-  { key: 'menu',      label: 'Menú',       icon: '📋', color: '#0ea5e9' },
-  { key: 'reports',   label: 'Reportes',   icon: '📊', color: '#22c55e' },
-  { key: 'customers', label: 'Clientes',   icon: '👥', color: '#a855f7' },
-  { key: 'settings',  label: 'Config',     icon: '⚙️', color: '#888'    },
+const getTabs = (isShop) => [
+  { key: 'orders',   label: isShop ? '⚡ Pedidos' : '💻 Pedidos', icon: '⚡' },
+  { key: 'dashboard',label: 'Métricas', icon: '📈' },
+  { key: 'menu',     label: isShop ? 'Productos' : 'Menú',       icon: '📋' },
+  { key: 'customers', label: 'Clientes',  icon: '👥' },
+  { key: 'settings', label: 'Configuración', icon: '⚙️' },
 ];
 
 export default function BusinessHome({ business, onBack }) {
-  const [tab, setTab] = useState('live');
-  const isShop = business?.business_type === 'SHOP';
-
-  const businessTabs = isShop
-    ? TABS.filter(t => t.key !== 'live')  // shops don't have live orders
-    : TABS;
+  const isShop = business?.business_type !== 'BAR';
+  const [tab, setTab] = useState('orders');
 
   return (
     <div style={{ minHeight: '100vh', background: '#080808', color: 'white', fontFamily: "'Inter', system-ui, sans-serif", display: 'flex', flexDirection: 'column' }}>
@@ -36,62 +32,68 @@ export default function BusinessHome({ business, onBack }) {
           )}
           <div>
             <div style={{ fontSize: '16px', fontWeight: '900', color: 'white', lineHeight: 1 }}>{business.name}</div>
-            <div style={{ fontSize: '11px', color: business.business_type === 'SHOP' ? '#6366f1' : '#FF4500', fontWeight: '700', marginTop: '2px' }}>
-              {business.business_type === 'SHOP' ? '🛍️ Tienda' : '🍺 Bar / Restaurante'}
+            <div style={{ fontSize: '11px', color: isShop ? '#6366f1' : '#FF4500', fontWeight: '700', marginTop: '2px', textTransform: 'uppercase' }}>
+              {isShop ? `🛍️ ${business.business_type}` : '🍺 Bar / Restaurante'}
             </div>
           </div>
         </div>
 
-        {/* Quick links for non-admin staff */}
+        {/* Quick links for public menu access */}
         <div style={{ display: 'flex', gap: '6px' }}>
-          {business.business_type !== 'SHOP' && (
-            <a href={`/?business_id=${business.id}&view=display`} target="_blank"
-              style={{ padding: '6px 12px', background: '#17a2b822', color: '#17a2b8', borderRadius: '8px', textDecoration: 'none', fontSize: '12px', fontWeight: '700', border: '1px solid #17a2b844' }}>
-              📺 Pantalla
-            </a>
-          )}
-          <a href={`/?business_id=${business.id}`} target="_blank"
-            style={{ padding: '6px 12px', background: '#1a1a1a', color: '#555', borderRadius: '8px', textDecoration: 'none', fontSize: '12px', fontWeight: '700', border: '1px solid #222' }}>
-            📱 QR
+          <a href={`/${business.slug}`} target="_blank"
+            style={{ padding: '6px 14px', background: isShop ? '#6366f1' : '#FF4500', color: 'white', borderRadius: '8px', textDecoration: 'none', fontSize: '12px', fontWeight: '800' }}>
+            {isShop ? 'Ver Tienda ↗' : 'Ir a mi Menú ↗'}
           </a>
         </div>
       </div>
 
-      {/* ── CONTENT ── */}
-      <div style={{ flex: 1, overflow: 'auto', paddingBottom: '72px' }}>
-      {tab === 'live'      && <LiveOrders businessId={business.id} business={business} />}
-      {tab === 'menu'      && <AdminProducts businessId={business.id} business={business} />}
-      {tab === 'reports'   && <AdminDashboard businessId={business.id} />}
-      {tab === 'customers' && <CustomersPanel businessId={business.id} businessName={business.name} />}
-      {tab === 'settings'  && <BusinessSettings business={business} />}
-      </div>
-
-      {/* ── BOTTOM TABS ── */}
-      <div style={{
-        position: 'fixed', bottom: 0, left: 0, right: 0,
-        background: 'rgba(10,10,10,0.97)', borderTop: '1px solid #1a1a1a',
-        display: 'flex', backdropFilter: 'blur(12px)', zIndex: 100,
-        paddingBottom: 'env(safe-area-inset-bottom)',
-      }}>
-        {businessTabs.map(t => {
+      {/* ── TOP NAVIGATION ── */}
+      <div style={{ background: '#0f0f0f', borderBottom: '1px solid #1a1a1a', display: 'flex', justifyContent: 'center', gap: '8px', padding: '12px 16px', zIndex: 100 }}>
+        {getTabs(isShop).map(t => {
           const active = tab === t.key;
           return (
             <button key={t.key} onClick={() => setTab(t.key)}
               style={{
-                flex: 1, padding: '12px 4px 10px', background: 'transparent', border: 'none',
-                cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px',
+                background: active ? '#FF4500' : 'transparent',
+                color: active ? 'white' : '#888',
+                border: active ? 'none' : '1px solid #222',
+                borderRadius: '8px',
+                padding: '10px 16px',
+                fontSize: '14px',
+                fontWeight: '800',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
                 transition: 'all 0.2s',
               }}>
-              <span style={{ fontSize: '20px', filter: active ? 'none' : 'grayscale(1) opacity(0.4)' }}>{t.icon}</span>
-              <span style={{ fontSize: '10px', fontWeight: '800', color: active ? t.color : '#333', letterSpacing: '0.3px' }}>
-                {t.label}
-              </span>
-              {active && (
-                <div style={{ width: '20px', height: '2px', background: t.color, borderRadius: '2px', marginTop: '1px' }} />
-              )}
+              <span>{t.icon}</span>
+              {t.label}
             </button>
           );
         })}
+      </div>
+
+      {/* ── CONTENT ── */}
+      <div style={{ flex: 1, overflow: 'auto' }}>
+      {tab === 'orders' && (
+         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            {!isShop && (
+              <div style={{ padding: '10px 20px', background: '#111', borderBottom: '1px solid #222', display: 'flex', gap: '10px', overflowX: 'auto' }}>
+                <p style={{ margin: '0 8px 0 0', color: '#666', fontSize: '12px', fontWeight: '800', alignSelf: 'center', whiteSpace: 'nowrap' }}>VISTAS ADICIONALES:</p>
+                <a href={`/b/${business.slug}/cashier`} target="_blank" rel="noreferrer" style={{ background: '#222', color: '#aaa', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', textDecoration: 'none', fontWeight: 'bold' }}>💵 Caja (Fullscreen)</a>
+                <a href={`/b/${business.slug}/kitchen`} target="_blank" rel="noreferrer" style={{ background: '#222', color: '#aaa', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', textDecoration: 'none', fontWeight: 'bold' }}>🔥 Cocina</a>
+                <a href={`/b/${business.slug}/bar`} target="_blank" rel="noreferrer" style={{ background: '#222', color: '#aaa', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', textDecoration: 'none', fontWeight: 'bold' }}>🍺 Barra</a>
+                <a href={`/b/${business.slug}/display`} target="_blank" rel="noreferrer" style={{ background: '#222', color: '#aaa', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', textDecoration: 'none', fontWeight: 'bold' }}>📺 Pantalla Pública</a>
+              </div>
+            )}
+            <LiveOrders businessId={business.id} business={business} />
+         </div>
+      )}
+      {tab === 'dashboard' && <AdminDashboard businessId={business.id} business={business} />}
+      {tab === 'menu'      && <AdminProducts businessId={business.id} business={business} />}
+      {tab === 'customers' && <CustomersPanel businessId={business.id} businessName={business.name} />}
+      {tab === 'settings'  && <BusinessSettings business={business} />}
       </div>
     </div>
   );
@@ -103,6 +105,19 @@ function BusinessSettings({ business }) {
   const [whatsapp, setWhatsapp] = useState(business.whatsapp_number || '');
   const [outputMode, setOutputMode] = useState(business.order_output_mode || 'SCREEN');
   const [paperWidth, setPaperWidth] = useState(business.paper_width || 80);
+  const [openHour, setOpenHour]     = useState(business.open_time_hour ?? 16);
+  const [closeHour, setCloseHour]   = useState(business.close_time_hour ?? 4);
+
+  const isShop = business?.business_type !== 'BAR';
+  const [openHour2, setOpenHour2]   = useState(business.open_time_hour_2 ?? -1);
+  const [closeHour2, setCloseHour2] = useState(business.close_time_hour_2 ?? -1);
+
+  // Branding
+  const [logoUrl, setLogoUrl] = useState(business.logo_url || '');
+  const [bannerUrl, setBannerUrl] = useState(business.banner_url || '');
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [uploadingBanner, setUploadingBanner] = useState(false);
+
   const [saving, setSaving]     = useState(false);
   const [saved, setSaved]       = useState(false);
 
@@ -118,11 +133,36 @@ function BusinessSettings({ business }) {
       whatsapp_number: whatsapp || null,
       order_output_mode: outputMode,
       paper_width: paperWidth,
+      open_time_hour: openHour,
+      close_time_hour: closeHour,
+      open_time_hour_2: isShop ? openHour2 : null,
+      close_time_hour_2: isShop ? closeHour2 : null,
     }).eq('id', business.id);
 
     setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
+  };
+
+  const handleBrandingUpload = async (e, field) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const isLogo = field === 'logo_url';
+    if (isLogo) setUploadingLogo(true); else setUploadingBanner(true);
+    
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${business.id}/branding_${field}_${Date.now()}.${fileExt}`;
+
+    const { error: uploadError } = await supabase.storage.from('products').upload(fileName, file);
+    if (uploadError) {
+      alert("Error al subir: " + uploadError.message);
+    } else {
+      const { data } = supabase.storage.from('products').getPublicUrl(fileName);
+      const url = data.publicUrl;
+      await supabase.from('businesses').update({ [field]: url }).eq('id', business.id);
+      if (isLogo) setLogoUrl(url); else setBannerUrl(url);
+    }
+    if (isLogo) setUploadingLogo(false); else setUploadingBanner(false);
   };
 
   const field = (label, child) => (
@@ -149,9 +189,77 @@ function BusinessSettings({ business }) {
         <div>
           <input type="tel" value={whatsapp} onChange={e => setWhatsapp(e.target.value.replace(/\D/g, ''))}
             style={inputStyle} placeholder="Ej: 5493624123456" />
-          <p style={{ fontSize: '11px', color: '#333', margin: '5px 0 0 0' }}>Formato internacional, sin + ni espacios</p>
+          <p style={{ fontSize: '11px', color: '#facc15', margin: '5px 0 0 0', fontWeight: 'bold' }}>⚠️ Importante: Debe iniciar con 549 (código país y área). Si no tiene 549, los links pueden fallar.</p>
         </div>
       )}
+
+      {/* BRANDING */}
+      <div style={{ background: '#111', border: '1px solid #1a1a1a', borderRadius: '16px', padding: '16px', marginBottom: '24px', display: 'flex', gap: '20px' }}>
+        <div style={{ flex: 1 }}>
+          <label style={{ display: 'block', fontSize: '11px', color: '#555', fontWeight: '800', textTransform: 'uppercase', marginBottom: '8px' }}>Logo Circular</label>
+          <div style={{ position: 'relative', width: '80px', height: '80px', borderRadius: '50%', background: '#080808', border: '2px dashed #222', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {logoUrl ? <img src={logoUrl} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: '24px' }}>📸</span>}
+            <input type="file" onChange={e => handleBrandingUpload(e, 'logo_url')} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} disabled={uploadingLogo} />
+            {uploadingLogo && <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px' }}>Subiendo...</div>}
+          </div>
+        </div>
+        <div style={{ flex: 2 }}>
+          <label style={{ display: 'block', fontSize: '11px', color: '#555', fontWeight: '800', textTransform: 'uppercase', marginBottom: '8px' }}>Portada (Banner)</label>
+          <div style={{ position: 'relative', width: '100%', height: '80px', borderRadius: '10px', background: '#080808', border: '2px dashed #222', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {bannerUrl ? <img src={bannerUrl} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: '24px' }}>🖼️</span>}
+            <input type="file" onChange={e => handleBrandingUpload(e, 'banner_url')} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} disabled={uploadingBanner} />
+            {uploadingBanner && <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px' }}>Subiendo...</div>}
+          </div>
+        </div>
+      </div>
+
+      {/* HORARIOS */}
+      <p style={{ margin: '0 0 10px 0', fontSize: '12px', fontWeight:'bold', color: '#888' }}>TURNO 1</p>
+      <div style={{ display: 'flex', gap: '15px', marginBottom: '10px' }}>
+        <div style={{ flex: 1 }}>
+          {field('Abre a las',
+            <select value={openHour} onChange={e => setOpenHour(Number(e.target.value))} style={selectStyle}>
+              <option value={-1}>Siempre Abierto (24h)</option>
+              {Array.from({length: 24}).map((_, i) => <option key={i} value={i}>{String(i).padStart(2,'0')}:00</option>)}
+            </select>
+          )}
+        </div>
+        <div style={{ flex: 1, opacity: openHour === -1 ? 0.3 : 1, pointerEvents: openHour === -1 ? 'none' : 'auto' }}>
+          {field('Cierra a las',
+            <select value={closeHour} onChange={e => setCloseHour(Number(e.target.value))} style={selectStyle}>
+               <option value={-1}>Siempre Abierto (24h)</option>
+               {Array.from({length: 24}).map((_, i) => <option key={i} value={i}>{String(i).padStart(2,'0')}:00</option>)}
+            </select>
+          )}
+        </div>
+      </div>
+
+      {isShop && openHour !== -1 && (
+        <>
+          <p style={{ margin: '15px 0 10px 0', fontSize: '12px', fontWeight:'bold', color: '#888', borderTop: '1px solid #222', paddingTop: '15px' }}>TURNO 2 (Opcional)</p>
+          <div style={{ display: 'flex', gap: '15px', marginBottom: '10px' }}>
+            <div style={{ flex: 1 }}>
+              {field('Abre a las',
+                <select value={openHour2} onChange={e => setOpenHour2(Number(e.target.value))} style={selectStyle}>
+                  <option value={-1}>No aplica</option>
+                  {Array.from({length: 24}).map((_, i) => <option key={i} value={i}>{String(i).padStart(2,'0')}:00</option>)}
+                </select>
+              )}
+            </div>
+            <div style={{ flex: 1, opacity: openHour2 === -1 ? 0.3 : 1, pointerEvents: openHour2 === -1 ? 'none' : 'auto' }}>
+              {field('Cierra a las',
+                <select value={closeHour2} onChange={e => setCloseHour2(Number(e.target.value))} style={selectStyle}>
+                   <option value={-1}>No aplica</option>
+                   {Array.from({length: 24}).map((_, i) => <option key={i} value={i}>{String(i).padStart(2,'0')}:00</option>)}
+                </select>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+      <p style={{ margin: '-10px 0 24px 0', fontSize: '11px', color: '#888' }}>
+        Si cierras después de la medianoche (ej: abre 18:00 y cierra 04:00), los reportes no se cortarán a las 00:00. Usa "Siempre Abierto" para kioscos 24h.
+      </p>
 
       {business.business_type !== 'SHOP' && (
         <>
@@ -182,21 +290,13 @@ function BusinessSettings({ business }) {
 
       {/* QR Links */}
       <div style={{ background: '#0f0f0f', border: '1px solid #1a1a1a', borderRadius: '10px', padding: '14px', marginBottom: '24px' }}>
-        <p style={{ fontSize: '11px', color: '#555', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px', margin: '0 0 10px 0' }}>Vistas operacionales (para tablets/displays)</p>
+        <p style={{ fontSize: '11px', color: '#555', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px', margin: '0 0 10px 0' }}>Enlace para tus clientes (QR)</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-          {[
-            { label: '📱 Menú cliente (QR)',    url: `/?business_id=${business.id}` },
-            { label: '📺 Pantalla clientes',     url: `/?business_id=${business.id}&view=display` },
-            { label: '💵 Caja',                  url: `/?business_id=${business.id}&view=cashier` },
-            { label: '🔥 Cocina',                url: `/?business_id=${business.id}&view=kitchen` },
-            { label: '🍺 Barra',                 url: `/?business_id=${business.id}&view=bar` },
-          ].map(link => (
-            <a key={link.url} href={link.url} target="_blank"
-              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: '#151515', borderRadius: '8px', textDecoration: 'none', color: '#888', fontSize: '13px', border: '1px solid #1e1e1e' }}>
-              <span>{link.label}</span>
-              <span style={{ color: '#333', fontSize: '11px' }}>↗</span>
-            </a>
-          ))}
+          <a href={`/${business.slug}`} target="_blank"
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', background: '#151515', borderRadius: '8px', textDecoration: 'none', color: '#ccc', fontSize: '14px', border: '1px solid #222', fontWeight: 'bold' }}>
+            <span>📱 Menú Público Oficial</span>
+            <span style={{ color: '#FF4500', fontSize: '14px' }}>↗</span>
+          </a>
         </div>
       </div>
 

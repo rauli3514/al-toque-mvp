@@ -1,37 +1,39 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 
-export default function AdminDashboard({ businessId }) {
-  const [orders, setOrders] = useState([]);
-  const [tab, setTab] = useState('active'); // active | history
+export default function AdminDashboard({ businessId, business }) {
+  const getLogicalDateStr = (dateObj) => {
+    const d = new Date(dateObj);
+    let resetHour = 5; // Default for bars
+    if (business?.business_type !== 'BAR') resetHour = 0; // Shops don't cross midnight heavily usually
+    else if (business?.close_time_hour != null) {
+      // If closes past midnight (0-11), shift logical day. If closes evening (12-23), don't shift.
+      resetHour = business.close_time_hour < 12 ? business.close_time_hour + 1 : 0;
+    }
+    d.setHours(d.getHours() - resetHour);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
 
-  const [clickingId, setClickingId] = useState(null);
+  const [orders, setOrders] = useState([]);
+  const [allProducts, setAllProducts] = useState([]);
+  const [selectedDate, setSelectedDate] = useState(() => getLogicalDateStr(new Date()));
 
   useEffect(() => {
-    // Initial load
     fetchOrders();
+    fetchProducts();
 
     const channel = supabase.channel('dashboard-orders-channel')
       .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'orders',
-        filter: `business_id=eq.${businessId}`
+        event: '*',  schema: 'public', table: 'orders', filter: `business_id=eq.${businessId}`
       }, (payload) => {
-        console.log('Dashboard realtime event:', payload.eventType, payload.new || payload.old);
-
         if (payload.eventType === 'INSERT') {
-          // New order: fetch with items joined (can't get joins from realtime payload)
           fetchSingleOrder(payload.new.id);
         } else if (payload.eventType === 'UPDATE') {
           setOrders(prev => prev.map(o => o.id === payload.new.id ? { ...o, ...payload.new } : o));
         } else if (payload.eventType === 'DELETE') {
           setOrders(prev => prev.filter(o => o.id !== payload.old.id));
         }
-      })
-      .subscribe((status) => {
-        console.log('Dashboard subscription status:', status);
-      });
+      }).subscribe();
 
     return () => { supabase.removeChannel(channel) };
   }, [businessId]);
@@ -39,7 +41,7 @@ export default function AdminDashboard({ businessId }) {
   const fetchSingleOrder = async (orderId) => {
     const { data } = await supabase
       .from('orders')
-      .select('*, order_items(quantity, product_id, unit_price, products(name))')
+      .select('*, order_items(quantity, product_id, unit_price, notes, products(name), order_item_modifiers(modifier_name))')
       .eq('id', orderId)
       .single();
     if (data) setOrders(prev => {
@@ -51,84 +53,140 @@ export default function AdminDashboard({ businessId }) {
   const fetchOrders = async () => {
     const { data, error } = await supabase
       .from('orders')
-      .select('*, order_items(quantity, product_id, unit_price, products(name))')
+      .select('*, order_items(quantity, product_id, unit_price, notes, products(name), order_item_modifiers(modifier_name))')
       .eq('business_id', businessId)
       .order('created_at', { ascending: false });
 
-    if (error) console.error("Error fetching orders", error);
-    else setOrders(data);
+    if (!error) setOrders(data);
   };
 
-  const updateStatus = async (orderId, newStatus) => {
-    try {
-      setClickingId(orderId);
-      const { error } = await supabase
-        .from('orders')
-        .update({ status: newStatus })
-        .eq('id', orderId);
-        
-      if (error) throw error;
-      fetchOrders();
-      // Keep feedback visible slightly longer for tactile feel
-      setTimeout(() => setClickingId(null), 600);
-    } catch (e) {
-      alert("Error cambiando estado: " + e.message);
-      setClickingId(null);
-    }
+  const fetchProducts = async () => {
+    const { data, error } = await supabase
+      .from('products')
+      .select('name')
+      .eq('business_id', businessId)
+      .eq('available', true)
+      .is('deleted_at', null);
+    
+    if (!error && data) setAllProducts(data.map(p => p.name));
   };
 
-  // Metrics
-  const today = new Date().toISOString().split('T')[0];
-  const todaysOrders = orders.filter(o => o.created_at.startsWith(today));
-  const ventasHoy = todaysOrders.filter(o => o.status === 'DELIVERED').reduce((acc, o) => acc + Number(o.total), 0);
+  const todaysOrders = orders.filter(o => getLogicalDateStr(o.created_at) === selectedDate);
+  const deliveredOrders = todaysOrders.filter(o => o.status === 'DELIVERED');
+  const historyOrders = todaysOrders.filter(o => ['DELIVERED', 'CANCELLED'].includes(o.status));
+
+  const ventasHoy = deliveredOrders.reduce((acc, o) => acc + Number(o.total), 0);
   const totalPedidosHoy = todaysOrders.length;
 
-  // History tab orders
-  const historyOrders = orders.filter(o => ['DELIVERED', 'CANCELLED'].includes(o.status));
+  // --- Metrics ---
+  const productCounts = {};
+  deliveredOrders.forEach(o => {
+    if (o.items && o.items.length > 0) {
+      o.items.forEach(i => {
+        productCounts[i.name] = (productCounts[i.name] || 0) + i.quantity;
+      });
+    } else if (o.order_items && o.order_items.length > 0) {
+      o.order_items.forEach(i => {
+        const name = i.products?.name || 'Producto';
+        productCounts[name] = (productCounts[name] || 0) + i.quantity;
+      });
+    }
+  });
+  const topProducts = Object.entries(productCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
 
-  // Kanban filters
-  const getFiltered = (statusStr) => orders.filter(o => o.status === statusStr || (statusStr==='PENDING_PAYMENT_CASH' && o.status==='PENDING_PAYMENT'));
+  const hourCounts = {};
+  deliveredOrders.forEach(o => {
+    const h = new Date(o.created_at).getHours();
+    const hStr = String(h).padStart(2, '0') + ':00';
+    hourCounts[hStr] = (hourCounts[hStr] || 0) + 1;
+  });
+  const topHours = Object.entries(hourCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3);
 
-  // Render a single Kanban Column
-  const renderColumn = (title, statusFilter, nextActionStr, nextStatusKey, colColor) => (
-    <div className="admin-card" style={{minWidth:'280px', minHeight:'60vh', borderTop:`4px solid ${colColor}`, padding:'15px', background:'#1a1a1a', borderRadius:'0 0 10px 10px'}}>
-      <h3 style={{marginTop:0, borderBottom:'1px solid #333', paddingBottom:'10px', color:'#ccc'}}>
-        {title} <span className="add-btn" style={{fontSize:'12px', padding:'4px 8px'}}>{getFiltered(statusFilter).length}</span>
-      </h3>
+  const typeCounts = { DELIVERY: 0, PICKUP: 0 };
+  deliveredOrders.forEach(o => {
+    if (o.order_type === 'DELIVERY') typeCounts.DELIVERY++;
+    else typeCounts.PICKUP++;
+  });
+  const totalTypes = typeCounts.DELIVERY + typeCounts.PICKUP;
+  const percDeliv = totalTypes > 0 ? Math.round((typeCounts.DELIVERY / totalTypes) * 100) : 0;
+  const percPick = totalTypes > 0 ? Math.round((typeCounts.PICKUP / totalTypes) * 100) : 0;
+
+  // --- Sugerencias Automáticas ---
+  const sugerencias = [];
+  if (topProducts.length > 0) {
+    sugerencias.push({ icon: '🔥', title: `Producto estrella: ${topProducts[0][0]}`, text: 'Podés destacarlo o subir precio.' });
+  }
+  const zeroSales = allProducts.filter(p => !productCounts[p]);
+  if (zeroSales.length > 0) {
+    sugerencias.push({ icon: '⚠️', title: `${zeroSales.length} productos sin ventas`, text: 'Revisar precios o considerar eliminarlos.' });
+  }
+  if (topHours.length > 0) {
+    sugerencias.push({ icon: '🕒', title: `Hora pico: ${topHours[0][0]}hs`, text: 'Activá alguna promo en ese horario puntual.' });
+  }
+  if (totalTypes > 0 && typeCounts.PICKUP > typeCounts.DELIVERY) {
+    sugerencias.push({ icon: '📦', title: 'Predomina retiro', text: 'Podés optimizar tu atención en local.' });
+  }
+  
+  const downloadCSV = () => {
+    let csv = 'Pedido,Fecha,Hora,Cliente,Teléfono,Productos,Total,Tipo,Estado\n';
+    historyOrders.forEach(o => {
+      const d = new Date(o.created_at);
+      const fecha = d.toLocaleDateString('es-AR');
+      const hora = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
       
-      {getFiltered(statusFilter).map(order => (
-        <div key={order.id} style={{background:'#111', padding:'15px', borderRadius:'10px', marginBottom:'15px', border:'1px solid #444', transition:'all 0.3s', borderColor: clickingId === order.id ? 'var(--success)' : '#444'}}>
-          <div className="admin-card-head" style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px'}}>
-            <span style={{fontSize:'32px', color:'white', fontWeight:'900'}}>#{order.display_number}</span>
-            <span style={{color: 'var(--success)', fontSize:'20px', fontWeight:'bold'}}>${order.total}</span>
-          </div>
-          
-          <div style={{color:'#ddd', fontSize:'15px', marginBottom:'15px', padding:'10px 0', borderTop:'1px solid #333', borderBottom:'1px solid #333'}}>
-            {order.order_items?.map((item, idx) => (
-               <div key={idx} style={{marginBottom:'4px'}}>• {item.quantity}x {item.products?.name}</div>
-            ))}
-          </div>
+      let itemsStr = '';
+      if (o.items && o.items.length > 0) {
+        itemsStr = o.items.map(i => {
+           let text = `${i.quantity}x ${i.name}${i.variant ? ` (${i.variant})` : ''}`;
+           if (i.notes && i.notes.trim()) text += ` | Obs: ${i.notes.replace(/"/g, '""')}`;
+           return text;
+        }).join(' | ');
+      } else {
+        itemsStr = (o.order_items || []).map(i => {
+          let text = `${i.quantity}x ${i.products?.name || 'Producto'}`;
+          const mods = i.order_item_modifiers || [];
+          if (mods.length > 0) text += ` (${mods.map(m => m.modifier_name).join(', ')})`;
+          if (i.notes && i.notes.trim()) text += ` | Obs: ${i.notes.replace(/"/g, '""')}`;
+          return text;
+        }).join(' | ');
+      }
 
-          <button 
-            className="btn-primary" 
-            style={{width:'100%', padding:'12px', fontSize:'15px', fontWeight:'bold', border:'none', borderRadius:'8px', cursor:'pointer', transition:'background 0.2s', background: clickingId === order.id ? 'var(--success)' : nextStatusKey==='PAID' ? 'var(--success)' : nextStatusKey==='IN_PREPARATION' ? '#b8860b' : nextStatusKey==='READY' ? '#17a2b8' : 'var(--primary)' }}
-            onClick={() => updateStatus(order.id, nextStatusKey)}
-          >
-            {clickingId === order.id ? '🔔 ¡Hecho!' : nextActionStr}
-          </button>
-        </div>
-      ))}
-    </div>
-  );
+      const tipo = o.order_type === 'DELIVERY' ? 'Envío' : 'Retiro';
+      let estadoTxt = o.status === 'DELIVERED' ? 'Entregado' : 'Cancelado';
+
+      csv += `"${o.display_number}","${fecha}","${hora}","${o.customer_name || ''}","${o.customer_phone || ''}","${itemsStr}","${o.total}","${tipo}","${estadoTxt}"\n`;
+    });
+    const blob = new Blob(['\\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Ventas_${business.name}_${selectedDate}.csv`;
+    a.click();
+  };
 
   return (
     <div className="admin-layout" style={{background:'#121212', minHeight:'100vh', color:'white', padding:'20px'}}>
       
-      {/* Top Bar Metrics */}
+      {/* Top Bar Metrics & Date Filter */}
       <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', background:'#1a1a1a', padding:'20px', borderRadius:'15px', marginBottom:'20px', flexWrap:'wrap', gap:'15px'}}>
-        <h2 style={{margin:0, color:'var(--primary)'}}>DASHBOARD</h2>
+        <div>
+          <h2 style={{margin:'0 0 10px 0', color: business?.business_type !== 'BAR' ? '#6366f1' : 'var(--primary)'}}>DASHBOARD</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
+              style={{ padding:'8px 12px', borderRadius:'8px', border:'1px solid #333', background:'#111', color:'white', fontWeight:'bold' }} />
+            {historyOrders.length > 0 && (
+               <button onClick={downloadCSV} style={{ padding:'8px 14px', background:'#22c55e22', color:'#22c55e', border:'1px solid #22c55e', borderRadius:'8px', fontWeight:'bold', cursor:'pointer' }}>
+                 📥 Exportar CSV
+               </button>
+            )}
+          </div>
+        </div>
         <div style={{textAlign:'right'}}>
-          <p style={{margin:0, color:'#aaa', fontSize:'14px'}}>MÉTRICAS DEL DÍA</p>
+          <p style={{margin:0, color:'#aaa', fontSize:'14px', textTransform: 'uppercase'}}>Métricas ({selectedDate})</p>
           <div style={{display:'flex', gap:'20px', marginTop:'5px'}}>
              <span>Ventas: <b style={{color:'var(--success)', fontSize:'22px'}}>${ventasHoy}</b></span>
              <span>Pedidos: <b style={{color:'white', fontSize:'22px'}}>{totalPedidosHoy}</b></span>
@@ -136,24 +194,65 @@ export default function AdminDashboard({ businessId }) {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div style={{display:'flex', gap:'10px', marginBottom:'20px'}}>
-         <button onClick={() => setTab('active')} style={{flex:1, padding:'15px', borderRadius:'10px', border:'none', fontSize:'16px', fontWeight:'bold', background: tab === 'active' ? 'var(--primary)' : '#222', color: tab==='active'?'white':'#888', cursor:'pointer'}}>⏱ En Curso (Kanban)</button>
-         <button onClick={() => setTab('history')} style={{flex:1, padding:'15px', borderRadius:'10px', border:'none', fontSize:'16px', fontWeight:'bold', background: tab === 'history' ? '#444' : '#222', color: tab === 'history'?'white':'#888', cursor:'pointer'}}>📜 Historial del Día</button>
-      </div>
+      {deliveredOrders.length > 0 && (
+        <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap', marginBottom: '20px' }}>
+          <div style={{ background: '#1a1a1a', padding: '20px', borderRadius: '15px', flex: '1', minWidth: '250px' }}>
+             <p style={{ margin: '0 0 15px 0', fontSize: '13px', color: '#888', textTransform: 'uppercase', fontWeight: 'bold' }}>🏆 Productos más vendidos</p>
+             {topProducts.length === 0 && <span style={{color: '#555', fontSize: '14px'}}>Sin datos operativos</span>}
+             {topProducts.map(([name, qty], idx) => (
+               <div key={idx} style={{ fontSize: '15px', marginBottom: '8px', color: '#eee', fontWeight: '500' }}>
+                 {idx + 1}. {name} — <span style={{ color: 'var(--success)' }}>{qty} ventas</span>
+               </div>
+             ))}
+          </div>
 
-      {/* Kanban Layout - Only visible in 'active' tab */}
-      {tab === 'active' && (
-        <div className="kanban-grid" style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(280px, 1fr))', gap:'20px'}}>
-          {renderColumn('1. CAJA (Esperando Pago)', 'PENDING_PAYMENT_CASH', 'Aceptar Pago', 'PAID', '#e03e00')}
-          {renderColumn('2. PAGADOS (Cocina)', 'PAID', 'En Preparación', 'IN_PREPARATION', '#b8860b')}
-          {renderColumn('3. EN PREPARACIÓN', 'IN_PREPARATION', 'Listo a Barra', 'READY', '#17a2b8')}
-          {renderColumn('4. LISTOS EN BARRA', 'READY', 'Entregado ✔️', 'DELIVERED', '#28a745')}
+          <div style={{ background: '#1a1a1a', padding: '20px', borderRadius: '15px', flex: '1', minWidth: '250px' }}>
+             <p style={{ margin: '0 0 15px 0', fontSize: '13px', color: '#888', textTransform: 'uppercase', fontWeight: 'bold' }}>🔥 Horas más activas</p>
+             {topHours.length === 0 && <span style={{color: '#555', fontSize: '14px'}}>Sin datos operativos</span>}
+             {topHours.map(([hour, count], idx) => (
+               <div key={idx} style={{ fontSize: '15px', marginBottom: '8px', color: '#eee', fontWeight: '500' }}>
+                 {hour}hs → <span style={{ color: 'var(--success)' }}>{count} pedidos</span>
+               </div>
+             ))}
+          </div>
+
+          <div style={{ background: '#1a1a1a', padding: '20px', borderRadius: '15px', flex: '1', minWidth: '250px' }}>
+             <p style={{ margin: '0 0 15px 0', fontSize: '13px', color: '#888', textTransform: 'uppercase', fontWeight: 'bold' }}>📦 Tipo de pedido</p>
+             {totalTypes === 0 && <span style={{color: '#555', fontSize: '14px'}}>Sin datos operativos</span>}
+             {totalTypes > 0 && (
+               <>
+                 <div style={{ fontSize: '15px', marginBottom: '8px', color: '#eee', fontWeight: '500' }}>
+                   Retiro: <span style={{ color: 'var(--success)' }}>{percPick}%</span> <span style={{ color: '#888', fontSize:'13px'}}>({typeCounts.PICKUP})</span>
+                 </div>
+                 <div style={{ fontSize: '15px', marginBottom: '8px', color: '#eee', fontWeight: '500' }}>
+                   Envío: <span style={{ color: 'var(--success)' }}>{percDeliv}%</span> <span style={{ color: '#888', fontSize:'13px'}}>({typeCounts.DELIVERY})</span>
+                 </div>
+               </>
+             )}
+          </div>
         </div>
       )}
 
-      {/* History Grid - Only visible in 'history' tab */}
-      {tab === 'history' && (
+      {/* Sugerencias Automáticas */}
+      {sugerencias.length > 0 && deliveredOrders.length > 0 && (
+        <div style={{ background: '#1a1a1a', padding: '20px', borderRadius: '15px', marginBottom: '20px', borderLeft: '4px solid var(--primary)' }}>
+          <p style={{ margin: '0 0 15px 0', fontSize: '13px', color: '#888', textTransform: 'uppercase', fontWeight: 'bold' }}>💡 Sugerencias Inteligentes</p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '15px' }}>
+            {sugerencias.slice(0,4).map((sug, i) => (
+              <div key={i} style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                <span style={{ fontSize: '24px' }}>{sug.icon}</span>
+                <div>
+                  <div style={{ fontSize: '14px', color: 'white', fontWeight: '700' }}>{sug.title}</div>
+                  <div style={{ fontSize: '13px', color: '#aaa', marginTop: '2px' }}>{sug.text}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* History Grid */}
+      <div style={{background:'#1a1a1a', padding:'25px', borderRadius:'15px'}}>
         <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(300px, 1fr))', gap:'20px'}}>
           {historyOrders.length === 0 && <p style={{color:'#666', marginTop:'20px', width:'100%'}}>No hay órdenes finalizadas hoy.</p>}
           {historyOrders.map(order => (
@@ -166,18 +265,26 @@ export default function AdminDashboard({ businessId }) {
                  {order.status}
                </div>
                <div style={{borderTop:'1px solid #333', paddingTop:'15px'}}>
-                  {order.order_items?.map((item, idx) => (
-                    <div key={idx} style={{display:'flex', gap:'10px', fontSize:'14px', marginBottom:'8px'}}>
-                       <b style={{color:'#aaa'}}>{item.quantity}x</b>
-                       <span style={{color:'#ccc'}}>{item.products?.name}</span>
-                    </div>
-                  ))}
+                  {order.items && order.items.length > 0 ? (
+                    order.items.map((item, idx) => (
+                      <div key={idx} style={{display:'flex', gap:'10px', fontSize:'14px', marginBottom:'8px'}}>
+                         <b style={{color:'#aaa'}}>{item.quantity}x</b>
+                         <span style={{color:'#ccc'}}>{item.name}{item.variant ? ` (${item.variant})` : ''}</span>
+                      </div>
+                    ))
+                  ) : (
+                    order.order_items?.map((item, idx) => (
+                      <div key={idx} style={{display:'flex', gap:'10px', fontSize:'14px', marginBottom:'8px'}}>
+                         <b style={{color:'#aaa'}}>{item.quantity}x</b>
+                         <span style={{color:'#ccc'}}>{item.products?.name}</span>
+                      </div>
+                    ))
+                  )}
                </div>
             </div>
           ))}
         </div>
-      )}
-
+      </div>
     </div>
   );
 }
