@@ -206,7 +206,11 @@ function PlatformAdmin({ bars, shops, events, onCreate, onDelete, onRefreshEvent
       <h1 style={{ fontSize:'36px', fontWeight:'900', margin:'20px 0 4px 0', background:'linear-gradient(90deg, #FF4500, #ff8c00)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>
         ⚡ AlToque
       </h1>
-      <p style={{ fontSize:'13px', color:'#333', marginBottom:'40px', fontWeight:'600' }}>Plataforma · Panel interno</p>
+      <p style={{ fontSize:'13px', color:'#333', marginBottom:'16px', fontWeight:'600' }}>Plataforma · Panel interno</p>
+      
+      <a href="/" target="_blank" style={{ marginBottom:'40px', padding:'8px 16px', background:'#22c55e', color:'white', borderRadius:'8px', textDecoration:'none', fontWeight:'800', fontSize:'14px' }}>
+         🌍 Ver Marketplace General
+      </a>
 
       {/* ── CREATE BUSINESS ── */}
       <div style={{ width:'100%', maxWidth:'600px', background:'#0f0f0f', border:'1px solid #1a1a1a', borderRadius:'16px', padding:'20px', marginBottom:'40px' }}>

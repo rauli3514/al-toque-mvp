@@ -343,6 +343,9 @@ export default function ShopUI({ businessId, business: initialBusiness }) {
       {view === 'shop' && (
       <>
       <div style={{ paddingTop: business?.logo_url ? '50px' : '36px', paddingBottom: '20px', paddingLeft: '20px', paddingRight: '20px', textAlign: 'center', position: 'sticky', top: 0, zIndex: 100, background: isFashion||isGifts||isBeauty ? 'rgba(255,255,255,0.95)' : 'rgba(15,15,15,0.95)', backdropFilter: 'blur(10px)', borderBottom: `1px solid ${isFashion||isGifts||isBeauty ? '#eee' : '#222'}` }}>
+        <a href="/" style={{ position:'absolute', top:'16px', left:'16px', textDecoration:'none', fontSize:'13px', fontWeight:'700', color:accent, background:`${accent}22`, padding:'6px 12px', borderRadius:'12px' }}>
+           ← Volver al inicio
+        </a>
         <h1 onClick={() => setShowInfoModal(true)} style={{ margin: '0 0 4px 0', fontSize: '24px', fontWeight: '900', color: accent, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
           {shopName} <span style={{ fontSize: '18px' }}>ℹ️</span>
         </h1>

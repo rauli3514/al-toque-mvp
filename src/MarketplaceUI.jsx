@@ -20,14 +20,14 @@ export default function MarketplaceUI() {
     // 1. Cargar comercios activos (SHOP o evento general) con TODOS sus productos para búsqueda offline
     const { data: shopsData } = await supabase
       .from('businesses')
-      .select('*, products(id, name, price, image_url, available, description, is_upsell_target, categories(name))')
+      .select('*, products(id, name, price, image_url, available, description, is_upsell_target, category_id)')
       .neq('business_type', 'BAR')
       .order('created_at', { ascending: false });
 
     // 2. Extraer categorías únicas reales
     const { data: catsData } = await supabase
       .from('categories')
-      .select('name, businesses!inner(id, business_type)')
+      .select('id, name, businesses!inner(id, business_type)')
       .neq('businesses.business_type', 'BAR');
     
     let uniqueCats = [];
@@ -44,6 +44,17 @@ export default function MarketplaceUI() {
          else if (lower.includes('regalo')) icon = '🎁';
          else if (lower.includes('postre') || lower.includes('dulce') || lower.includes('torta') || lower.includes('helado')) icon = '🍦';
          return { id: name, label: name, icon };
+      });
+    }
+
+    if (shopsData && catsData) {
+      const cMap = new Map(catsData.map(c => [c.id, c.name]));
+      shopsData.forEach(s => {
+        if (s.products) {
+          s.products.forEach(p => {
+             p.categoryName = cMap.get(p.category_id) || '';
+          });
+        }
       });
     }
 
@@ -93,7 +104,7 @@ export default function MarketplaceUI() {
         const catNormal = categoryName.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
         matchedProducts = (shop.products || []).filter(p => {
            if (!p.available) return false;
-           const pCat = p.categories?.name?.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") || "";
+           const pCat = (p.categoryName || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
            return pCat.includes(catNormal);
         });
       } 
@@ -110,7 +121,7 @@ export default function MarketplaceUI() {
           if (!p.available) return false;
           const pName = p.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
           const pDesc = (p.description || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-          const pCat = (p.categories?.name || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          const pCat = (p.categoryName || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
           
           // El producto matchea si TODOS los tokens están en el nombre, descripción o categoría
           return searchTokens.every(token => 

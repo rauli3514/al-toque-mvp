@@ -35,16 +35,33 @@ export default function EventUI({ slug }) {
     // 2. Obtener Tiendas del Evento con TODOS sus productos para búsqueda offline
     const { data: shopData } = await supabase
       .from('event_businesses')
-      .select('businesses(*, products(id, name, price, image_url, available, description, is_upsell_target, categories(name)))')
+      .select('businesses(*, products(id, name, price, image_url, available, description, is_upsell_target, category_id))')
       .eq('event_id', eventData.id);
 
     const eventShops = shopData ? shopData.map(item => item.businesses).filter(b => b) : [];
+
+    // Extract categories
+    const { data: catsData } = await supabase
+      .from('categories')
+      .select('id, name')
+      .in('business_id', eventShops.map(s => s.id));
+
+    if (catsData) {
+      const cMap = new Map(catsData.map(c => [c.id, c.name]));
+      eventShops.forEach(s => {
+        if (s.products) {
+          s.products.forEach(p => {
+             p.categoryName = cMap.get(p.category_id) || '';
+          });
+        }
+      });
+    }
 
     // 3. Extraer categorías únicas reales basándonos en los productos de ESTAS tiendas
     const catSet = new Set();
     eventShops.forEach(shop => {
       (shop.products || []).forEach(p => {
-         if (p.categories?.name) catSet.add(p.categories.name);
+         if (p.categoryName) catSet.add(p.categoryName);
       });
     });
 
@@ -110,7 +127,7 @@ export default function EventUI({ slug }) {
         const catNormal = categoryName.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
         matchedProducts = (shop.products || []).filter(p => {
            if (!p.available) return false;
-           const pCat = p.categories?.name?.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") || "";
+           const pCat = (p.categoryName || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
            return pCat.includes(catNormal);
         });
       } 
@@ -126,7 +143,7 @@ export default function EventUI({ slug }) {
           if (!p.available) return false;
           const pName = p.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
           const pDesc = (p.description || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-          const pCat = (p.categories?.name || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          const pCat = (p.categoryName || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
           
           return searchTokens.every(token => 
             pName.includes(token) || pDesc.includes(token) || pCat.includes(token)
