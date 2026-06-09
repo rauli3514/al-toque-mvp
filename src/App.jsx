@@ -7,6 +7,7 @@ import ShopUI from './ShopUI';
 
 import MarketplaceUI from './MarketplaceUI';
 import EventUI from './EventUI';
+import BusinessRegistration from './BusinessRegistration';
 
 // Staff / operational views (legacy direct URL access)
 import CustomerUI from './CustomerUI';
@@ -93,9 +94,12 @@ export default function App() {
     </div>
   );
 
-  // ── ROOT LANDING / EVENTS ───────────────────────────────────────────────────
   if (p1 === 'eventos' && p2) {
     return <EventUI slug={p2} />;
+  }
+
+  if (p1 === 'registro') {
+    return <BusinessRegistration />;
   }
 
   if (!p1) {
@@ -208,9 +212,14 @@ function PlatformAdmin({ bars, shops, events, onCreate, onDelete, onRefreshEvent
       </h1>
       <p style={{ fontSize:'13px', color:'#333', marginBottom:'16px', fontWeight:'600' }}>Plataforma · Panel interno</p>
       
-      <a href="/" target="_blank" style={{ marginBottom:'40px', padding:'8px 16px', background:'#22c55e', color:'white', borderRadius:'8px', textDecoration:'none', fontWeight:'800', fontSize:'14px' }}>
-         🌍 Ver Marketplace General
-      </a>
+      <div style={{ display: 'flex', gap: '10px', marginBottom: '40px' }}>
+        <a href="/" target="_blank" style={{ padding:'8px 16px', background:'#22c55e', color:'white', borderRadius:'8px', textDecoration:'none', fontWeight:'800', fontSize:'14px' }}>
+           🌍 Ver Marketplace General
+        </a>
+        <a href="/registro" target="_blank" style={{ padding:'8px 16px', background:'#3b82f6', color:'white', borderRadius:'8px', textDecoration:'none', fontWeight:'800', fontSize:'14px' }}>
+           ➕ Enviar link de registro
+        </a>
+      </div>
 
       {/* ── CREATE BUSINESS ── */}
       <div style={{ width:'100%', maxWidth:'600px', background:'#0f0f0f', border:'1px solid #1a1a1a', borderRadius:'16px', padding:'20px', marginBottom:'40px' }}>
@@ -227,11 +236,16 @@ function PlatformAdmin({ bars, shops, events, onCreate, onDelete, onRefreshEvent
             style={{ padding:'12px 14px', background:'#111', border:'1px solid #222', borderRadius:'10px', color:'white', fontSize:'14px', cursor:'pointer' }}>
             <option value="BAR">🍺 Bar / Restaurante</option>
             <option value="SHOP">🛍️ Tienda (General)</option>
-            <option value="RETAIL">📦 Retail</option>
+            <option value="FOOD">🍔 Alimentos / Gastronomía</option>
+            <option value="DRINKS">🧃 Bebidas</option>
             <option value="FASHION">👗 Indumentaria / Moda</option>
-            <option value="GIFTS">🎁 Regalos e Insignias</option>
-            <option value="TECH">💻 Tecnología</option>
             <option value="BEAUTY">💅 Belleza / Cosméticos</option>
+            <option value="TECH">💻 Tecnología</option>
+            <option value="MERCH">🎨 Merch / Artesanías</option>
+            <option value="GIFTS">🎁 Regalos e Insignias</option>
+            <option value="RETAIL">📦 Retail</option>
+            <option value="MEDIA">📸 Fotos / Videos</option>
+            <option value="OTHER">🧩 Otros</option>
           </select>
           <button onClick={handleCreate} disabled={creating || !newName.trim()}
             style={{ padding:'12px 20px', background: newName.trim() ? '#FF4500' : '#1a1a1a', color: newName.trim() ? 'white' : '#333', border:'none', borderRadius:'10px', fontWeight:'900', fontSize:'14px', cursor: newName.trim() ? 'pointer' : 'default', transition:'all 0.2s' }}>

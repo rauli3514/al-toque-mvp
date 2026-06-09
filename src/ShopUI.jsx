@@ -75,6 +75,7 @@ export default function ShopUI({ businessId, business: initialBusiness }) {
   const bType = business?.business_type || 'SHOP';
   const shopName = business?.name || 'Mi tienda';
   const whatsappNumber = business?.whatsapp_number || '';
+  const isCatalogMode = !whatsappNumber;
 
   useEffect(() => {
     // Initial fetch to ensure we have the latest
@@ -301,24 +302,35 @@ export default function ShopUI({ businessId, business: initialBusiness }) {
         </div>
 
         {/* Controles de cantidad o botón agregar */}
-        <div style={{ padding: '0 16px 16px' }}>
-          {!hasVariants && cartEntry ? (
-            // Producto simple ya en carrito → mostrar +/-
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: isFashion||isGifts||isBeauty ? '#f3f4f6' : '#1a1a2e', borderRadius: '10px', padding: '6px 10px' }}
-              onClick={e => e.stopPropagation()}>
-              <button onClick={() => removeFromCart(p)} style={{ background: 'transparent', border: 'none', color: isFashion||isGifts||isBeauty ? '#111' : 'white', fontSize: '22px', fontWeight: '900', cursor: 'pointer', lineHeight: 1, padding: '0 4px' }}>−</button>
-              <span style={{ fontWeight: '900', fontSize: '16px', color: accent }}>{cartEntry.qty}</span>
-              <button onClick={() => addToCart(p)} style={{ background: 'transparent', border: 'none', color: accent, fontSize: '22px', fontWeight: '900', cursor: 'pointer', lineHeight: 1, padding: '0 4px' }}>+</button>
-            </div>
-          ) : (
-            // Sin variantes o con variantes → botón que abre modal
+        {!isCatalogMode && (
+          <div style={{ padding: '0 16px 16px' }}>
+            {!hasVariants && cartEntry ? (
+              // Producto simple ya en carrito → mostrar +/-
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: isFashion||isGifts||isBeauty ? '#f3f4f6' : '#1a1a2e', borderRadius: '10px', padding: '6px 10px' }}
+                onClick={e => e.stopPropagation()}>
+                <button onClick={() => removeFromCart(p)} style={{ background: 'transparent', border: 'none', color: isFashion||isGifts||isBeauty ? '#111' : 'white', fontSize: '22px', fontWeight: '900', cursor: 'pointer', lineHeight: 1, padding: '0 4px' }}>−</button>
+                <span style={{ fontWeight: '900', fontSize: '16px', color: accent }}>{cartEntry.qty}</span>
+                <button onClick={() => addToCart(p)} style={{ background: 'transparent', border: 'none', color: accent, fontSize: '22px', fontWeight: '900', cursor: 'pointer', lineHeight: 1, padding: '0 4px' }}>+</button>
+              </div>
+            ) : (
+              // Sin variantes o con variantes → botón que abre modal
+              <button
+                onClick={() => { setSelectedProduct(p); setActiveVarId(p.variants && p.variants.length > 0 ? p.variants[0].id : null); }}
+                style={{ width:'100%', padding:'10px', background: accent, color: (isFashion || isBeauty || isGifts) ? '#fff' : '#000', border:'none', borderRadius: '8px', fontWeight:'700', fontSize:'13px', cursor:'pointer' }}>
+                {hasVariants ? (totalQtyInCart > 0 ? `Agregar más (${totalQtyInCart} en carrito)` : 'Elegir opciones') : 'Agregar'}
+              </button>
+            )}
+          </div>
+        )}
+        {isCatalogMode && (
+          <div style={{ padding: '0 16px 16px' }}>
             <button
               onClick={() => { setSelectedProduct(p); setActiveVarId(p.variants && p.variants.length > 0 ? p.variants[0].id : null); }}
-              style={{ width:'100%', padding:'10px', background: accent, color: (isFashion || isBeauty || isGifts) ? '#fff' : '#000', border:'none', borderRadius: '8px', fontWeight:'700', fontSize:'13px', cursor:'pointer' }}>
-              {hasVariants ? (totalQtyInCart > 0 ? `Agregar más (${totalQtyInCart} en carrito)` : 'Elegir opciones') : 'Agregar'}
+              style={{ width:'100%', padding:'10px', background: isFashion||isGifts||isBeauty ? '#f3f4f6' : '#2a2a3e', color: isFashion||isGifts||isBeauty ? '#111' : '#fff', border:'none', borderRadius: '8px', fontWeight:'700', fontSize:'13px', cursor:'pointer' }}>
+              Ver detalles
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -429,17 +441,19 @@ export default function ShopUI({ businessId, business: initialBusiness }) {
               )}
 
               {/* ACCIONES */}
-              <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
-                <button onClick={() => { addToCart(p, selVar); setSelectedProduct(null); }} style={{ padding: '16px', background: isFashion||isGifts||isBeauty?'#111':'#333', color: '#fff', border: 'none', borderRadius: '12px', fontSize: '16px', fontWeight: '700', cursor: 'pointer' }}>+ Agregar al carrito</button>
-                <button onClick={() => handleSingleProduct(p, selVar)} style={{ padding: '16px', background: '#25d366', color: '#fff', border: 'none', borderRadius: '12px', fontSize: '16px', fontWeight: '700', cursor: 'pointer' }}>🛒 Comprar ahora</button>
-              </div>
+              {!isCatalogMode && (
+                <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
+                  <button onClick={() => { addToCart(p, selVar); setSelectedProduct(null); }} style={{ padding: '16px', background: isFashion||isGifts||isBeauty?'#111':'#333', color: '#fff', border: 'none', borderRadius: '12px', fontSize: '16px', fontWeight: '700', cursor: 'pointer' }}>+ Agregar al carrito</button>
+                  <button onClick={() => handleSingleProduct(p, selVar)} style={{ padding: '16px', background: '#25d366', color: '#fff', border: 'none', borderRadius: '12px', fontSize: '16px', fontWeight: '700', cursor: 'pointer' }}>🛒 Comprar ahora</button>
+                </div>
+              )}
             </div>
           </div>
         );
       })()}
 
       {/* CARRITO FLOTANTE */}
-      {!isCheckoutOpen && cart.length > 0 && (
+      {!isCheckoutOpen && cart.length > 0 && !isCatalogMode && (
         <div style={{ position: 'fixed', bottom: '70px', left: 0, right: 0, padding: '16px', background: isFashion||isGifts||isBeauty ? 'rgba(255,255,255,0.95)' : 'rgba(10,10,20,0.95)', borderTop: `1px solid ${isFashion||isGifts||isBeauty ? '#eee' : '#222'}`, backdropFilter: 'blur(10px)', zIndex: 1000, display: 'flex', gap: '10px', alignItems: 'center' }}>
           <div style={{ flex: 1, display:'flex', flexDirection:'column' }}>
             <span style={{ fontSize: '12px', color: isFashion||isGifts||isBeauty ? '#555' : '#888' }}>{totalItems} ítems seleccionados</span>
@@ -617,27 +631,29 @@ export default function ShopUI({ businessId, business: initialBusiness }) {
       )}
 
       {/* BOTTOM NAVIGATION BAR */}
-      <div style={{
-        position: 'fixed', bottom: 0, left: 0, right: 0,
-        background: isFashion||isGifts||isBeauty ? '#ffffff' : '#1a1a2e',
-        display: 'flex', justifyContent: 'space-around', alignItems: 'center',
-        padding: '12px 0 24px 0',
-        borderTop: `1px solid ${isFashion||isGifts||isBeauty ? '#eee' : '#222'}`,
-        zIndex: 1500,
-        boxShadow: '0 -4px 10px rgba(0,0,0,0.05)'
-      }}>
-        <button onClick={() => setView('shop')} style={{ background: 'transparent', border: 'none', color: view === 'shop' ? accent : (isFashion||isGifts||isBeauty?'#888':'#666'), fontSize: '12px', fontWeight: '700', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
-          <span style={{ fontSize: '22px' }}>🏠</span>
-          Inicio
-        </button>
-        <button onClick={() => setView('orders')} style={{ background: 'transparent', border: 'none', color: view === 'orders' ? accent : (isFashion||isGifts||isBeauty?'#888':'#666'), fontSize: '12px', fontWeight: '700', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', position: 'relative' }}>
-          <span style={{ fontSize: '22px' }}>🧾</span>
-          Mis pedidos
-          {activeOrder && (
-            <span style={{ position: 'absolute', top: -4, right: 12, background: '#22c55e', color: 'white', borderRadius: '50%', width: '18px', height: '18px', fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>1</span>
-          )}
-        </button>
-      </div>
+      {!isCatalogMode && (
+        <div style={{
+          position: 'fixed', bottom: 0, left: 0, right: 0,
+          background: isFashion||isGifts||isBeauty ? '#ffffff' : '#1a1a2e',
+          display: 'flex', justifyContent: 'space-around', alignItems: 'center',
+          padding: '12px 0 24px 0',
+          borderTop: `1px solid ${isFashion||isGifts||isBeauty ? '#eee' : '#222'}`,
+          zIndex: 1500,
+          boxShadow: '0 -4px 10px rgba(0,0,0,0.05)'
+        }}>
+          <button onClick={() => setView('shop')} style={{ background: 'transparent', border: 'none', color: view === 'shop' ? accent : (isFashion||isGifts||isBeauty?'#888':'#666'), fontSize: '12px', fontWeight: '700', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+            <span style={{ fontSize: '22px' }}>🏠</span>
+            Inicio
+          </button>
+          <button onClick={() => setView('orders')} style={{ background: 'transparent', border: 'none', color: view === 'orders' ? accent : (isFashion||isGifts||isBeauty?'#888':'#666'), fontSize: '12px', fontWeight: '700', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', position: 'relative' }}>
+            <span style={{ fontSize: '22px' }}>🧾</span>
+            Mis pedidos
+            {activeOrder && (
+              <span style={{ position: 'absolute', top: -4, right: 12, background: '#22c55e', color: 'white', borderRadius: '50%', width: '18px', height: '18px', fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>1</span>
+            )}
+          </button>
+        </div>
+      )}
 
       <style>{`
         @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
