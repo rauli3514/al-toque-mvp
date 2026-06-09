@@ -62,9 +62,9 @@ export default function App() {
     } else if (p1 === 'b' && p2) {
       localStorage.setItem('last_business_slug', p2);
       loadBusiness(p2);
-    } else if (p1 && p1 !== 'admin' && p1 !== 'b' && p1 !== 'eventos') {
+    } else if (p1 && p1 !== 'admin' && p1 !== 'b' && p1 !== 'eventos' && p1 !== 'registro') {
       loadBusiness(p1);
-    } else if (!p1) {
+    } else if (!p1 || p1 === 'registro') {
       setLoading(false);
     } else {
       setLoading(false);
