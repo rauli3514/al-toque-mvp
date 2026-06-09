@@ -185,13 +185,7 @@ export default function EventUI({ slug }) {
 
   const isShowingResults = searchQuery.trim().length >= 2 || selectedCat;
 
-  // Gradientes predefinidos para las promociones
-  const promoGradients = [
-    'linear-gradient(135deg, #F59E0B, #EF4444)',
-    'linear-gradient(135deg, #22C55E, #10B981)',
-    'linear-gradient(135deg, #3B82F6, #8B5CF6)',
-    'linear-gradient(135deg, #EC4899, #F43F5E)'
-  ];
+
 
   return (
     <div style={{ minHeight:'100vh', background:'#F8FAFC', color:'#0F172A', fontFamily:"'Inter', sans-serif", paddingBottom:'90px', overflowX:'hidden' }}>
@@ -242,10 +236,10 @@ export default function EventUI({ slug }) {
           .pill-btn.active { background: #E0F2FE; border-color: #38BDF8; color: #0284C7; }
 
           .promo-card {
-            min-width: 240px; height: 110px; border-radius: 20px; padding: 16px;
-            color: #FFFFFF; display: flex; flex-direction: column; justify-content: flex-end;
+            min-width: 140px; width: 140px; border-radius: 16px; padding: 0;
+            background: #FFFFFF; display: flex; flex-direction: column; 
             position: relative; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.06);
-            text-decoration: none;
+            text-decoration: none; border: 1px solid #E2E8F0;
             transition: transform 0.2s;
           }
           .promo-card:active { transform: scale(0.97); }
@@ -374,13 +368,15 @@ export default function EventUI({ slug }) {
                 </h2>
                 <div style={{ display: 'flex', gap: '16px', overflowX: 'auto', paddingBottom: '10px', scrollBehavior: 'smooth', marginRight:'-20px', paddingRight:'20px' }}>
                   {promos.map((promo, index) => {
-                    const bg = promoGradients[index % promoGradients.length];
                     return (
-                      <a key={promo.id} href={`/${promo.businesses.slug}`} className="promo-card" style={{ background: bg }}>
-                        <div style={{ fontSize:'24px', position:'absolute', top:'12px', right:'16px', opacity:0.8 }}>🔥</div>
-                        <div style={{ fontSize: '18px', fontWeight: '800', marginBottom: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{promo.name}</div>
-                        <div style={{ fontSize: '13px', fontWeight: '600', opacity: 0.9 }}>
-                           ${parseFloat(promo.price).toLocaleString('es-AR')} • {promo.businesses.name}
+                      <a key={promo.id} href={`/${promo.businesses.slug}`} className="promo-card">
+                        <div style={{ width: '100%', height: '110px', background: promo.image_url ? `url(${promo.image_url}) center/cover` : '#F1F5F9', position: 'relative' }}>
+                           <div style={{ position:'absolute', top:'8px', right:'8px', background:'#EF4444', color:'white', fontSize:'10px', fontWeight:'800', padding:'2px 6px', borderRadius:'8px' }}>🔥 PROMO</div>
+                        </div>
+                        <div style={{ padding: '12px' }}>
+                           <div style={{ fontSize: '13px', fontWeight: '800', color: '#0F172A', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginBottom: '2px' }}>{promo.name}</div>
+                           <div style={{ fontSize: '14px', fontWeight: '800', color: '#22C55E', marginBottom: '4px' }}>${parseFloat(promo.price).toLocaleString('es-AR')}</div>
+                           <div style={{ fontSize: '11px', fontWeight: '600', color: '#64748B', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>🏪 {promo.businesses.name}</div>
                         </div>
                       </a>
                     );
